@@ -225,8 +225,11 @@ test("the web-form copy list stays open while copying, and Help shows how to add
     await page.locator("#sec-report details summary").click();
     const row = page.locator(".copy-row", { hasText: "Příjmení" });
     await row.waitFor();
-    const box = await row.boundingBox();
-    assert.ok(box.height < 80, `a copy row is ${box.height}px tall`);
+    const layout = await page.evaluate(() => {
+      const row = [...document.querySelectorAll(".copy-row")].find((r) => r.textContent.includes("Příjmení"));
+      return { open: document.querySelector("#sec-report details")?.open, tag: row?.tagName, height: row?.getBoundingClientRect().height };
+    });
+    assert.ok(layout.tag === "BUTTON" && layout.height > 40 && layout.height < 80, `copy row: ${JSON.stringify(layout)}`);
     // Headless browsers differ in clipboard support, so record what the app copies.
     await page.evaluate(() => {
       window.copied = [];
