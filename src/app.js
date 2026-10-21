@@ -1051,26 +1051,30 @@ function renderGuest(stay, g, i) {
   </div>`;
 }
 
+// Labels stay in Czech: they match the fields of the Ubyport web form.
+function manualRows(stay, g) {
+  return [
+    ["Ubytován od", czDate(stay.arrival)],
+    ["Ubytován do", czDate(stay.departure)],
+    ["Příjmení", g.surname],
+    ["Jméno", g.givenNames],
+    ["Datum narození", czDate(g.birthDate)],
+    ["Státní občanství", g.nationality],
+    ["Bydliště v domovském státě", g.address],
+    ["Číslo cestovního dokladu", g.documentNumber],
+    ["Číslo víza", g.visa],
+    ["Účel pobytu", `${g.purpose} – ${tIn("cs", "purpose." + g.purpose)}`],
+  ];
+}
+
 function renderManualCopy(stay) {
   if (!stay.guests.length) return `<p class="muted">${t("report.manualEmpty")}</p>`;
-  // Labels stay in Czech: they match the fields of the Ubyport web form.
   return stay.guests
     .map((g) => {
-      const rows = [
-        ["Ubytován od", czDate(stay.arrival)],
-        ["Ubytován do", czDate(stay.departure)],
-        ["Příjmení", g.surname],
-        ["Jméno", g.givenNames],
-        ["Datum narození", czDate(g.birthDate)],
-        ["Státní občanství", g.nationality],
-        ["Bydliště v domovském státě", g.address],
-        ["Číslo cestovního dokladu", g.documentNumber],
-        ["Číslo víza", g.visa],
-        ["Účel pobytu", `${g.purpose} – ${tIn("cs", "purpose." + g.purpose)}`],
-      ];
+      const rows = manualRows(stay, g);
       return `<div class="copy-list"><p class="copy-guest">${avatar(g)} ${esc(guestName(g))}</p>${rows
         .map(([k, v]) => v
-          ? `<button class="copy-row ${copiedKey === `${g.id}:${k}` ? "copied" : ""}" data-action="copy" data-key="${esc(`${g.id}:${k}`)}" data-text="${esc(v)}" aria-label="${esc(`${k}: ${v}. ${t("copy")}`)}">
+          ? `<button class="copy-row ${copiedKey === `${g.id}:${k}` ? "copied" : ""}" data-action="copy" data-guest="${g.id}" data-key="${esc(`${g.id}:${k}`)}" data-label="${esc(k)}" data-text="${esc(v)}" aria-label="${esc(`${k}: ${v}. ${t("copy")}`)}">
               <span class="copy-label">${k}</span><span class="copy-value">${esc(v)}</span><span class="copy-icon">${ICON.copy}</span></button>`
           : `<div class="copy-row empty"><span class="copy-label">${k}</span><span class="copy-value muted">—</span></div>`)
         .join("")}</div>`;
@@ -1441,7 +1445,15 @@ document.addEventListener("toggle", (e) => {
 document.addEventListener("click", (e) => {
   // "toggle" arrives a moment later; remember the new state now in case a render comes first.
   const kept = e.target.closest("summary")?.parentElement;
-  if (kept?.dataset.keep) kept.open ? openDetails.delete(kept.dataset.keep) : openDetails.add(kept.dataset.keep);
+  if (kept?.dataset.keep) {
+    kept.open ? openDetails.delete(kept.dataset.keep) : openDetails.add(kept.dataset.keep);
+    // Show what was just typed, not what the list held before the last pause.
+    if (stayRefreshTimer) {
+      clearTimeout(stayRefreshTimer);
+      stayRefreshTimer = null;
+      refreshStatus();
+    }
+  }
   const el = e.target.closest("[data-action]");
   if (!el || (el.tagName === "INPUT" && el.type !== "button")) return;
   const action = el.dataset.action;
@@ -1674,7 +1686,11 @@ document.addEventListener("click", (e) => {
       copy(tIn(el.dataset.lang, "guestMessage"));
       return;
     case "copy":
-      copy(el.dataset.text, el.dataset.key);
+      if (el.dataset.label && stay && guest) {
+        // The list may lag behind typing for a moment, so copy what is saved now.
+        const value = manualRows(stay, guest).find(([k]) => k === el.dataset.label)?.[1];
+        if (value) copy(value, el.dataset.key);
+      } else copy(el.dataset.text, el.dataset.key);
       return;
     case "add-property": {
       const hues = state.properties.map(propertyHue);
@@ -1795,7 +1811,10 @@ document.addEventListener("input", (e) => {
   const index = stay.guests.findIndex((g) => g.id === onlyGuest);
   refreshGuest(stay, stay.guests[index], index);
   clearTimeout(stayRefreshTimer);
-  stayRefreshTimer = setTimeout(() => refreshStatus(onlyGuest), 180);
+  stayRefreshTimer = setTimeout(() => {
+    stayRefreshTimer = null;
+    refreshStatus(onlyGuest);
+  }, 180);
 });
 
 document.addEventListener("change", async (e) => {

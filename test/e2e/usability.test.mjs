@@ -241,6 +241,12 @@ test("the web-form copy list stays open while copying, and Help shows how to add
     assert.equal(await page.locator("#sec-report details[open]").count(), 1, "copying doesn't close the list");
     assert.match(await page.locator(".copy-row.copied").innerText(), /Smith/);
 
+    // Tapping right after typing copies the new value, even before the list catches up.
+    await openCard(page).locator('[data-field="surname"]').fill("Smithson");
+    await row.click();
+    await page.waitForFunction(() => window.copied.length === 2);
+    assert.equal(await page.evaluate(() => window.copied[1]), "Smithson");
+
     await page.goto(new URL("#/help", page.url()).href);
     const guide = page.locator("#home-screen");
     assert.equal(await guide.locator(".a2hs-slide svg").count(), 4, "every step has a picture");
