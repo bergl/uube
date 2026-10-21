@@ -17,6 +17,8 @@ Passport photo from WhatsApp → Claude reads the document → you check the det
 - A ready-made WhatsApp message asking guests for photos and their home address.
 - Leaves out Czech citizens, who are not reported.
 - No server. All data stays in the browser's local storage. Use JSON backup and restore when changing phones.
+- Five themes: Praha (golden hour), Prague by night, Vltava, Petřín in spring, and Classic, which follows the phone's dark mode.
+- English, Czech and Russian, chosen from the phone's language and switchable with the globe button.
 
 ## Using it
 
@@ -49,5 +51,8 @@ npm run build   # src/ → index.html (single self-contained file, served by Git
 | `src/extract.js` | Claude API call with structured JSON output |
 | `src/deadline.js` | Reporting deadline in Czech working days |
 | `src/app.js` | User interface |
+| `src/i18n.js` | English, Czech and Russian translations |
+| `src/themes.js`, `src/scenery.js` | Colour themes and the Prague skyline |
+| `src/country-names.js` | Country names in three languages, plus flag codes (generated) |
 
 The UNL layout follows [martiner/ubyport](https://github.com/martiner/ubyport), whose output Ubyport accepts. Before relying on the app, upload one real file and check that the receipt (*doručenka*) shows every record as accepted.

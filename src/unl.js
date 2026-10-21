@@ -5,23 +5,8 @@
 //   guests:  U|od|do|prijmeni|jmeno||narozeni|||stat|bydliste|doklad|vizum|ucel||poznamka
 // Lines are joined with CRLF and the file is encoded in Windows-1250.
 
-export const PURPOSES = {
-  "00": "Zdravotní (medical)",
-  "01": "Obchodní – služební cesta (business)",
-  "02": "Kulturní (cultural)",
-  "03": "Návštěva rodiny/přátel (visiting family/friends)",
-  "04": "Pozvání (invitation)",
-  "05": "Oficiální – politický (official)",
-  "06": "Podnikání – OSVČ (self-employed)",
-  "07": "Sportovní (sport)",
-  "10": "Turistika (tourism)",
-  "11": "Studium – školení, stáž (study)",
-  "12": "Tranzit (transit)",
-  "13": "Letištní tranzit (airport transit)",
-  "27": "Zaměstnání (employment)",
-  "93": "ADS vízum – občan Číny",
-  "99": "Ostatní / jiné (other)",
-};
+// Ubyport purpose-of-stay codes; their names are translated in i18n.js ("purpose.XX").
+export const PURPOSE_CODES = ["00", "01", "02", "03", "04", "05", "06", "07", "10", "11", "12", "13", "27", "93", "99"];
 
 // Fields must never contain the separator or line breaks.
 function clean(value) {

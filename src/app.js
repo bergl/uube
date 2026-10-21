@@ -1,14 +1,27 @@
 import { COUNTRIES } from "./countries.js";
+import { COUNTRY_INFO } from "./country-names.js";
 import { reportDeadline } from "./deadline.js";
-import { describeApiError, readDocuments } from "./extract.js";
-import { PURPOSES, buildUnl, czDate, encodeCp1250, unlFileName } from "./unl.js";
+import { apiErrorKey, readDocuments } from "./extract.js";
+import { LANGS, detectLang, getLang, locale, setLang, t, tIn } from "./i18n.js";
+import { skylineSvg } from "./scenery.js";
+import { DEFAULT_THEME, THEMES, applyTheme } from "./themes.js";
+import { PURPOSE_CODES, buildUnl, czDate, encodeCp1250, unlFileName } from "./unl.js";
 
 const STORAGE_KEY = "ubyport-helper-v1";
 const UBYPORT_URL = "https://ubyport.policie.cz/";
-const MODELS = {
-  "claude-opus-5-5": "Claude Opus 5.5 — most accurate (~2 Kč per photo)",
-  "claude-sonnet-5-5": "Claude Sonnet 5.5 — cheaper (~1 Kč per photo)",
-  "claude-haiku-5-5": "Claude Haiku 5.5 — cheapest, less reliable on blurry photos",
+const MODELS = { "claude-opus-5-5": "model.opus", "claude-sonnet-5-5": "model.sonnet", "claude-haiku-5-5": "model.haiku" };
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const ICON = {
+  home: '<svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/><path d="M10 19.5v-5h4v5"/></svg>',
+  cog: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/></svg>',
+  plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  help: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .8-1 1.5v.6"/><circle cx="12" cy="16.9" r=".6" fill="currentColor"/></svg>',
+  globe: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg>',
+  check: '<svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
+  download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/></svg>',
+  chat: '<svg viewBox="0 0 24 24"><path d="M4 18.5V6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H8.5z"/></svg>',
+  back: '<svg viewBox="0 0 24 24"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg>',
 };
 
 // ---------------------------------------------------------------- state
@@ -24,10 +37,17 @@ const emptyGuest = () => ({
   mrz: null, readerProblems: "",
 });
 
+const defaultSettings = () => ({ apiKey: "", model: "claude-opus-5-5", theme: DEFAULT_THEME, lang: "" });
+
 let state = load();
 let view = { name: "stays" };
-let busy = null; // { stayId, text }
+let busy = null; // { stayId }
 let flash = null; // { kind, text }
+let lastViewKey = null;
+let shownFlash = null;
+let toastTimer = null;
+let scanTimer = null;
+const freshGuests = new Set();
 
 function uid() {
   return Math.random().toString(36).slice(2, 10);
@@ -36,16 +56,16 @@ function uid() {
 function load() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (saved) return { settings: { apiKey: "", model: "claude-opus-5-5" }, properties: [], stays: [], ...saved };
+    if (saved) return { properties: [], stays: [], ...saved, settings: { ...defaultSettings(), ...saved.settings } };
   } catch {}
-  return { settings: { apiKey: "", model: "claude-opus-5-5" }, properties: [], stays: [] };
+  return { settings: defaultSettings(), properties: [], stays: [] };
 }
 
 function save() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (e) {
-    showFlash("error", "Couldn't save on this device: " + e.message);
+    showFlash("error", t("toast.saveFailed", { msg: e.message }));
   }
 }
 
@@ -63,13 +83,34 @@ function today() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+function daysBetween(fromIso, toIso) {
+  return Math.round((Date.parse(toIso) - Date.parse(fromIso)) / 86400000);
+}
+
 function niceDate(iso) {
   if (!iso) return "—";
-  return new Date(iso + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+  return new Date(iso + "T12:00:00").toLocaleDateString(locale(), { weekday: "short", day: "numeric", month: "short" });
 }
 
 function guestName(g) {
-  return [g.givenNames, g.surname].filter(Boolean).join(" ") || "Unnamed guest";
+  return [g.givenNames, g.surname].filter(Boolean).join(" ") || t("guest.unnamed");
+}
+
+function countryName(code) {
+  return COUNTRY_INFO[code]?.[getLang()] || COUNTRIES[code] || code;
+}
+
+function flag(code) {
+  const a2 = COUNTRY_INFO[code]?.a2;
+  return a2 ? String.fromCodePoint(...[...a2].map((c) => 0x1f1a5 + c.charCodeAt(0))) : "";
+}
+
+function avatar(g) {
+  const name = guestName(g);
+  const initials = ((g.givenNames[0] || "") + (g.surname[0] || "")).toUpperCase() || "?";
+  let hue = 0;
+  for (const ch of name) hue = (hue * 31 + ch.charCodeAt(0)) % 360;
+  return `<span class="avatar" style="--h:${hue}" aria-hidden="true">${esc(initials)}</span>`;
 }
 
 function showFlash(kind, text) {
@@ -77,48 +118,63 @@ function showFlash(kind, text) {
   render();
 }
 
+function greeting() {
+  const h = new Date().getHours();
+  return t(h < 5 ? "greet.night" : h < 11 ? "greet.morning" : h < 18 ? "greet.day" : h < 23 ? "greet.evening" : "greet.night");
+}
+
 // Errors block the export; warnings only ask for a second look.
 function checkGuest(g, stay) {
   const errors = [];
   const warnings = [];
-  if (!g.surname.trim()) errors.push("Surname is missing");
-  if (!g.givenNames.trim()) warnings.push("No given name — fine only if the passport has none");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(g.birthDate)) errors.push("Date of birth is missing");
-  else if (g.birthDate > today()) errors.push("Date of birth is in the future");
-  if (!g.nationality) errors.push("Nationality is missing");
-  else if (!COUNTRIES[g.nationality]) errors.push(`Nationality code "${g.nationality}" isn't in the Ubyport list`);
-  if (g.nationality === "CZE") errors.push("Czech citizens are not reported to Ubyport — remove this guest");
+  if (!g.surname.trim()) errors.push(t("v.surname"));
+  if (!g.givenNames.trim()) warnings.push(t("v.givenNames"));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(g.birthDate)) errors.push(t("v.birthMissing"));
+  else if (g.birthDate > today()) errors.push(t("v.birthFuture"));
+  if (!g.nationality) errors.push(t("v.nationalityMissing"));
+  else if (!COUNTRIES[g.nationality]) errors.push(t("v.nationalityUnknown", { code: g.nationality }));
+  if (g.nationality === "CZE") errors.push(t("v.czech"));
   const doc = g.documentNumber.trim();
-  if (!doc) errors.push("Document number is missing");
-  else if (doc.length < 4 || doc.length > 30) errors.push("Document number must be 4–30 characters");
-  if (!g.address.trim()) errors.push("Home address (abroad) is missing — ask the guest");
-  if (g.mrz && !g.mrz.valid) warnings.push("Passport code (MRZ) check failed — compare number and birth date with the photo");
-  if (g.mrz?.mismatches?.length) warnings.push("Corrected from the passport code: " + g.mrz.mismatches.join("; "));
-  if (g.expiryDate && stay?.arrival && g.expiryDate < stay.arrival) warnings.push("Document had expired before arrival");
-  if (g.readerProblems) warnings.push("Reader note: " + g.readerProblems);
+  if (!doc) errors.push(t("v.docMissing"));
+  else if (doc.length < 4 || doc.length > 30) errors.push(t("v.docLength"));
+  if (!g.address.trim()) errors.push(t("v.address"));
+  if (g.mrz && !g.mrz.valid) warnings.push(t("v.mrzFailed"));
+  const fixes = (g.mrz?.mismatches || []).filter((m) => typeof m === "object");
+  if (fixes.length) warnings.push(t("v.corrected", { list: fixes.map((m) => `${t("m." + m.field)} “${m.from}” → “${m.to}”`).join("; ") }));
+  if (g.expiryDate && stay?.arrival && g.expiryDate < stay.arrival) warnings.push(t("v.expired"));
+  if (g.readerProblems) warnings.push(t("v.readerNote", { note: g.readerProblems }));
   return { errors, warnings };
 }
 
 function checkStay(stay) {
   const errors = [];
   const property = findProperty(stay.propertyId);
-  if (!property) errors.push("Choose a property");
-  else if (!property.idub.trim()) errors.push(`Property "${property.label}" has no Ubyport ID (IDUB) — add it in Settings`);
-  if (!stay.arrival || !stay.departure) errors.push("Arrival and departure dates are required");
-  else if (stay.departure < stay.arrival) errors.push("Departure is before arrival");
-  if (!stay.guests.length) errors.push("No guests yet");
-  const badGuests = stay.guests.filter((g) => checkGuest(g, stay).errors.length);
-  if (badGuests.length) errors.push(`${badGuests.length} guest(s) still have missing or invalid details`);
+  if (!property) errors.push(t("s.chooseProperty"));
+  else if (!property.idub.trim()) errors.push(t("s.noIdub", { name: property.label || property.name }));
+  if (!stay.arrival || !stay.departure) errors.push(t("s.dates"));
+  else if (stay.departure < stay.arrival) errors.push(t("s.datesOrder"));
+  if (!stay.guests.length) errors.push(t("s.noGuests"));
+  const badGuests = stay.guests.filter((g) => checkGuest(g, stay).errors.length).length;
+  if (badGuests) errors.push(t("s.badGuests", { n: badGuests }));
   return errors;
 }
 
 function stayStatus(stay) {
-  if (stay.submittedAt) return { cls: "ok", text: "Reported" };
+  if (stay.submittedAt) return { cls: "ok", text: t("status.reported") };
   const deadline = stay.arrival ? reportDeadline(stay.arrival) : null;
-  const overdue = deadline && today() > deadline;
-  if (stay.exportedAt) return { cls: overdue ? "bad" : "warn", text: "File made — upload & mark reported" };
-  if (overdue) return { cls: "bad", text: `Overdue (was due ${niceDate(deadline)})` };
-  return { cls: "warn", text: deadline ? `Report by ${niceDate(deadline)}` : "Draft" };
+  const left = deadline ? daysBetween(today(), deadline) : null;
+  if (stay.exportedAt) return { cls: left !== null && left < 0 ? "bad" : "info", text: t("status.fileReady") };
+  if (left === null) return { cls: "muted", text: t("status.draft") };
+  if (left < 0) return { cls: "bad", text: t("status.overdue", { n: -left }) };
+  if (left === 0) return { cls: "bad", text: t("status.dueToday") };
+  return { cls: left === 1 ? "warn" : "calm", text: t("status.dueIn", { n: left }) };
+}
+
+function stayProgress(stay) {
+  const property = findProperty(stay.propertyId);
+  const details = !!property && !!stay.arrival && !!stay.departure && stay.departure >= stay.arrival;
+  const guests = stay.guests.length > 0 && stay.guests.every((g) => !checkGuest(g, stay).errors.length);
+  return [details, guests, !!stay.exportedAt, !!stay.submittedAt];
 }
 
 function download(filename, bytes, type) {
@@ -133,124 +189,301 @@ function download(filename, bytes, type) {
 async function copy(text) {
   try {
     await navigator.clipboard.writeText(text);
-    showFlash("ok", "Copied");
+    showFlash("ok", t("toast.copied"));
   } catch {
-    showFlash("error", "Couldn't copy — select the text and copy it by hand");
+    showFlash("error", t("toast.copyFailed"));
   }
+}
+
+function withTransition(fn) {
+  if (document.startViewTransition && !reducedMotion) document.startViewTransition(fn);
+  else fn();
+}
+
+function confetti() {
+  if (reducedMotion) return;
+  const css = getComputedStyle(document.documentElement);
+  const colors = ["--accent", "--accent-2", "--sun", "--ok"].map((v) => css.getPropertyValue(v).trim());
+  const layer = document.createElement("div");
+  layer.className = "confetti";
+  for (let i = 0; i < 70; i++) {
+    const p = document.createElement("i");
+    p.style.cssText =
+      `left:${50 + (Math.random() - 0.5) * 20}%;background:${colors[i % colors.length]};` +
+      `--dx:${(Math.random() - 0.5) * 600}px;--dy:${-(260 + Math.random() * 320)}px;--r:${Math.random() * 900 - 450}deg;` +
+      `animation-delay:${Math.random() * 0.12}s;${i % 3 ? "" : "border-radius:50%;"}`;
+    layer.append(p);
+  }
+  document.body.append(layer);
+  setTimeout(() => layer.remove(), 2200);
+}
+
+// ---------------------------------------------------------------- layout
+
+function mountShell() {
+  document.getElementById("app").innerHTML = `
+    <header class="hero">
+      ${skylineSvg()}
+      <div class="hero-tools">
+        <button class="hero-btn" data-action="cycle-lang" aria-label="${esc(t("nav.language"))}">${ICON.globe}<span id="lang-label"></span></button>
+        <button class="hero-btn" data-action="nav" data-view="help" aria-label="${esc(t("nav.help"))}">${ICON.help}</button>
+      </div>
+      <div class="hero-text" id="hero-text"></div>
+    </header>
+    <div id="toast-layer" aria-live="polite"></div>
+    <main id="view"></main>
+    <nav class="tabbar" id="tabbar"></nav>`;
+}
+
+function render() {
+  const key = view.name + (view.id || "");
+  const main = document.getElementById("view");
+  const heroText = document.getElementById("hero-text");
+  main.innerHTML =
+    view.name === "stay" ? renderStay(findStay(view.id)) : view.name === "settings" ? renderSettings() : view.name === "help" ? renderHelp() : renderStays();
+  heroText.innerHTML = renderHeroText();
+  document.getElementById("lang-label").textContent = LANGS[getLang()];
+  document.getElementById("tabbar").innerHTML = renderTabbar();
+
+  if (key !== lastViewKey) {
+    lastViewKey = key;
+    window.scrollTo({ top: 0 });
+    for (const el of [main, heroText]) {
+      el.classList.remove("enter");
+      void el.offsetWidth;
+      el.classList.add("enter");
+    }
+    clearTimeout(render.enterTimer);
+    render.enterTimer = setTimeout(() => [main, heroText].forEach((el) => el.classList.remove("enter")), 900);
+  }
+  renderToast();
+  freshGuests.clear();
+  syncScanner();
+}
+
+function renderHeroText() {
+  if (view.name === "stay") {
+    const stay = findStay(view.id);
+    if (!stay) return "";
+    const p = findProperty(stay.propertyId);
+    return `<h1>${esc(p?.label || p?.name || t("hero.newStay"))}</h1>
+      <p>${niceDate(stay.arrival)} → ${niceDate(stay.departure)} · ${t("hero.guests", { n: stay.guests.length })}</p>`;
+  }
+  if (view.name === "settings") return `<h1>${t("settings.title")}</h1><p>${t("settings.subtitle")}</p>`;
+  if (view.name === "help") return `<h1>${t("help.title")}</h1><p>${t("help.subtitle")}</p>`;
+  const open = state.stays.filter((s) => !s.submittedAt);
+  let line;
+  if (!state.properties.length || !state.settings.apiKey) line = t("hero.setup");
+  else if (!open.length) line = t("hero.allDone");
+  else {
+    const next = open.map((s) => (s.arrival ? reportDeadline(s.arrival) : null)).filter(Boolean).sort()[0];
+    line = t("hero.toReport", { n: open.length }) + (next ? ` · ${t("hero.nextDue", { date: niceDate(next) })}` : "");
+  }
+  return `<h1>${greeting()} <span class="wave">👋</span></h1><p>${esc(line)}</p>`;
+}
+
+function renderTabbar() {
+  const on = (names) => (names.includes(view.name) ? "on" : "");
+  return `
+    <button class="tab ${on(["stays", "stay"])}" data-action="nav" data-view="stays">${ICON.home}<span>${t("nav.stays")}</span></button>
+    <button class="fab" data-action="new-stay" aria-label="${esc(t("nav.newStay"))}">${ICON.plus}</button>
+    <button class="tab ${on(["settings"])}" data-action="nav" data-view="settings">${ICON.cog}<span>${t("nav.settings")}</span></button>`;
+}
+
+function renderToast() {
+  if (flash === shownFlash) return;
+  shownFlash = flash;
+  clearTimeout(toastTimer);
+  const layer = document.getElementById("toast-layer");
+  if (!flash) {
+    layer.innerHTML = "";
+    return;
+  }
+  layer.innerHTML = `<div class="toast ${flash.kind}" data-action="dismiss-flash" role="status">
+    <span class="toast-icon">${flash.kind === "ok" ? ICON.check : "!"}</span><span>${esc(flash.text)}</span></div>`;
+  if (flash.kind === "ok") {
+    const mine = flash;
+    toastTimer = setTimeout(() => {
+      layer.firstElementChild?.classList.add("leaving");
+      setTimeout(() => {
+        if (flash === mine) {
+          flash = shownFlash = null;
+          layer.innerHTML = "";
+        }
+      }, 350);
+    }, 3200);
+  }
+}
+
+// Cycles the friendly progress messages while photos are being read.
+function syncScanner() {
+  if (!busy) {
+    clearInterval(scanTimer);
+    scanTimer = null;
+    return;
+  }
+  if (scanTimer) return;
+  let i = 1;
+  scanTimer = setInterval(() => {
+    const el = document.getElementById("scan-text");
+    if (!el) return;
+    i = Math.min(i + 1, 4);
+    el.classList.remove("swap");
+    void el.offsetWidth;
+    el.textContent = t(`scan.${i}`);
+    el.classList.add("swap");
+  }, 2600);
 }
 
 // ---------------------------------------------------------------- views
 
-function render() {
-  const root = document.getElementById("app");
-  const html =
-    view.name === "stay" ? renderStay(findStay(view.id)) : view.name === "settings" ? renderSettings() : view.name === "help" ? renderHelp() : renderStays();
-  root.innerHTML = `
-    <header class="top">
-      <button class="brand" data-action="nav" data-view="stays">Ubyport Helper</button>
-      <nav>
-        <button data-action="nav" data-view="stays" class="${view.name === "stays" || view.name === "stay" ? "on" : ""}">Stays</button>
-        <button data-action="nav" data-view="settings" class="${view.name === "settings" ? "on" : ""}">Settings</button>
-        <button data-action="nav" data-view="help" class="${view.name === "help" ? "on" : ""}">Help</button>
-      </nav>
-    </header>
-    ${flash ? `<div class="flash ${flash.kind}" data-action="dismiss-flash">${esc(flash.text)}</div>` : ""}
-    <main>${html}</main>`;
-}
-
 function renderStays() {
-  const setupMissing = [];
-  if (!state.properties.length) setupMissing.push("add your apartments");
-  if (!state.settings.apiKey) setupMissing.push("add an Anthropic API key (for reading passports)");
-  const stays = [...state.stays].sort((a, b) => (b.arrival || "").localeCompare(a.arrival || ""));
+  const needsProperty = !state.properties.length;
+  const needsKey = !state.settings.apiKey;
+  const stays = [...state.stays].sort((a, b) => (a.arrival || "9").localeCompare(b.arrival || "9"));
   const open = stays.filter((s) => !s.submittedAt);
-  const done = stays.filter((s) => s.submittedAt);
+  const done = stays.filter((s) => s.submittedAt).reverse();
+
   const card = (s) => {
     const st = stayStatus(s);
     const p = findProperty(s.propertyId);
-    return `<button class="stay-card" data-action="open-stay" data-id="${s.id}">
-      <div class="row"><strong>${esc(p?.label || "No property")}</strong><span class="pill ${st.cls}">${esc(st.text)}</span></div>
-      <div class="muted">${niceDate(s.arrival)} → ${niceDate(s.departure)} · ${s.guests.length} guest${s.guests.length === 1 ? "" : "s"}</div>
-      <div class="muted small">${esc(s.guests.map(guestName).join(", "))}</div>
+    return `<button class="stay-card s-${st.cls}" data-action="open-stay" data-id="${s.id}">
+      <span class="stay-top"><span class="stay-place">${esc(p?.label || p?.name || t("stay.noProperty"))}</span><span class="pill ${st.cls}">${esc(st.text)}</span></span>
+      <span class="stay-dates">${niceDate(s.arrival)} <span class="arrow">→</span> ${niceDate(s.departure)}${s.label ? ` · <span class="muted">${esc(s.label)}</span>` : ""}</span>
+      <span class="stay-bottom"><span class="avatars">${s.guests.slice(0, 5).map(avatar).join("")}</span>
+        <span class="muted small">${t("hero.guests", { n: s.guests.length })}</span><span class="chev">›</span></span>
     </button>`;
   };
+
+  const onboarding =
+    needsProperty || needsKey
+      ? `<section class="card onboarding">
+          <h2>${t("onb.title")}</h2><p class="muted">${t("onb.text")}</p>
+          <ol class="checklist">
+            <li class="${needsProperty ? "" : "done"}"><button data-action="nav" data-view="settings"><span class="tick">${needsProperty ? "1" : ICON.check}</span>${t("onb.property")}</button></li>
+            <li class="${needsKey ? "" : "done"}"><button data-action="nav" data-view="settings"><span class="tick">${needsKey ? "2" : ICON.check}</span>${t("onb.key")}</button></li>
+            <li class="optional"><button data-action="nav" data-view="settings"><span class="tick">🎨</span>${t("onb.theme")}</button></li>
+          </ol>
+        </section>`
+      : "";
+
+  const empty = !stays.length
+    ? `<div class="empty"><div class="empty-art">${skylineSvg(3)}</div><h3>${t("list.emptyTitle")}</h3><p class="muted">${t("list.emptyText")}</p>
+        <button class="primary" data-action="new-stay">${ICON.plus}${t("nav.newStay")}</button></div>`
+    : "";
+
   return `
-    ${setupMissing.length ? `<div class="notice">First, <button class="link" data-action="nav" data-view="settings">open Settings</button> to ${setupMissing.join(" and ")}.</div>` : ""}
-    <button class="primary big" data-action="new-stay">+ New stay</button>
-    <h2>To report ${open.length ? `<span class="count">${open.length}</span>` : ""}</h2>
-    ${open.length ? open.map(card).join("") : `<p class="muted">Nothing waiting. 🎉</p>`}
-    ${open.filter((s) => !checkStay(s).length).length > 1 ? `<button data-action="export-all">Download one file per apartment for all ready stays</button>` : ""}
-    ${done.length ? `<details class="history"><summary>Reported (${done.length})</summary>${done.map(card).join("")}</details>` : ""}`;
+    ${onboarding}
+    ${empty}
+    ${stays.length ? `<h2 class="section-title">${t("list.toReport")} ${open.length ? `<span class="count">${open.length}</span>` : ""}</h2>` : ""}
+    ${stays.length && !open.length ? `<p class="all-done">${t("list.allDone")}</p>` : ""}
+    <div class="stack">${open.map(card).join("")}</div>
+    ${open.filter((s) => !checkStay(s).length).length > 1 ? `<button class="wide" data-action="export-all">${ICON.download}${t("list.exportAll")}</button>` : ""}
+    ${done.length ? `<details class="history"><summary>${t("list.reported", { n: done.length })}</summary><div class="stack">${done.map(card).join("")}</div></details>` : ""}`;
+}
+
+function renderStepper(stay) {
+  const done = stayProgress(stay);
+  const current = done.indexOf(false);
+  const labels = [t("step.details"), t("step.guests"), t("step.file"), t("step.reported")];
+  return `<ol class="stepper">${labels
+    .map((l, i) => `<li class="${done[i] ? "done" : ""} ${current === i ? "current" : ""}"><span class="dot">${done[i] ? ICON.check : i + 1}</span><span class="lbl">${l}</span></li>`)
+    .join("")}</ol>`;
 }
 
 function renderStay(stay) {
-  if (!stay) return `<p>Stay not found.</p>`;
+  if (!stay) return `<p>—</p>`;
   const isBusy = busy?.stayId === stay.id;
   return `
-    <button class="link back" data-action="nav" data-view="stays">← All stays</button>
+    <button class="back" data-action="nav" data-view="stays">${ICON.back}${t("nav.stays")}</button>
+    <div data-status="stepper">${renderStepper(stay)}</div>
+
     <section class="card">
-      <h2>Stay</h2>
-      <label>Apartment
+      <h2><span class="num">1</span>${t("stay.details")}</h2>
+      <label>${t("stay.apartment")}
         <select data-stay-field="propertyId">
-          <option value="">— choose —</option>
-          ${state.properties.map((p) => `<option value="${p.id}" ${p.id === stay.propertyId ? "selected" : ""}>${esc(p.label || p.name || "Unnamed")}</option>`).join("")}
+          <option value="">${t("stay.choose")}</option>
+          ${state.properties.map((p) => `<option value="${p.id}" ${p.id === stay.propertyId ? "selected" : ""}>${esc(p.label || p.name || "—")}</option>`).join("")}
         </select>
       </label>
+      ${state.properties.length ? "" : `<p class="hint"><button class="link" data-action="nav" data-view="settings">${t("stay.noApartments")}</button></p>`}
       <div class="two">
-        <label>Arrival<input type="date" data-stay-field="arrival" value="${esc(stay.arrival)}"></label>
-        <label>Departure<input type="date" data-stay-field="departure" value="${esc(stay.departure)}"></label>
+        <label>${t("stay.arrival")}<input type="date" data-stay-field="arrival" value="${esc(stay.arrival)}"></label>
+        <label>${t("stay.departure")}<input type="date" data-stay-field="departure" value="${esc(stay.departure)}"></label>
       </div>
       <div data-status="deadline">${renderDeadline(stay)}</div>
-      <label>Booking note (for you, not sent)<input data-stay-field="label" value="${esc(stay.label)}" placeholder="e.g. Airbnb HM123, John's group"></label>
+      <label>${t("stay.note")}<input data-stay-field="label" value="${esc(stay.label)}" placeholder="${esc(t("stay.notePlaceholder"))}"></label>
     </section>
 
     <section class="card">
-      <div class="row"><h2>Guests</h2><button class="small-btn" data-action="copy-guest-message">Copy message for guest</button></div>
-      <label class="upload ${isBusy ? "disabled" : ""}">
-        <input type="file" accept="image/*" multiple data-action="photos" ${isBusy ? "disabled" : ""}>
-        <span>${isBusy ? `<span class="spinner"></span> ${esc(busy.text)}` : "📷 Add passport / ID photos"}</span>
-        <small>${isBusy ? "This takes 10–40 seconds." : "Pick one or several photos (save them from WhatsApp first). Front + back of an ID card can go together."}</small>
-      </label>
+      <h2><span class="num">2</span>${t("stay.guests")}</h2>
+      <div class="ask">
+        <span class="muted small">${ICON.chat}${t("stay.askGuest")}</span>
+        <span class="chips">${Object.entries(LANGS).map(([code, label]) => `<button class="chip" data-action="copy-guest-message" data-lang="${code}">${label}</button>`).join("")}</span>
+      </div>
+      ${isBusy ? renderScanner() : `
+      <label class="upload">
+        <input type="file" accept="image/*" multiple data-action="photos">
+        <span class="upload-icon">${passportArt()}</span>
+        <span class="upload-title">${t("upload.title")}</span>
+        <small>${t("upload.hint")}</small>
+      </label>`}
       ${stay.guests.map((g, i) => renderGuest(stay, g, i)).join("")}
-      <button data-action="add-guest">+ Add guest by hand</button>
+      <button class="wide ghost" data-action="add-guest">${t("stay.addByHand")}</button>
     </section>
 
     <section class="card">
-      <h2>Report to the police</h2>
+      <h2><span class="num">3</span>${t("report.title")}</h2>
       <div data-status="report">${renderReportStatus(stay)}</div>
-      <ol class="steps">
-        <li><button class="primary" data-action="export" ${checkStay(stay).length ? "disabled" : ""}>Download Ubyport file (.unl)</button>
-          ${stay.exportedAt ? `<span class="muted small">Downloaded ${new Date(stay.exportedAt).toLocaleString()}</span>` : ""}</li>
-        <li>Open <a href="${UBYPORT_URL}" target="_blank" rel="noopener">Ubyport</a>, sign in, choose <em>sending a UNL file</em> and upload it.</li>
-        <li>Check the receipt (doručenka) says all records were accepted, then:
-          <button data-action="toggle-submitted">${stay.submittedAt ? "↺ Mark as not reported" : "✓ Mark as reported"}</button></li>
-      </ol>
-      <details><summary>Or type it into the Ubyport web form instead</summary>${renderManualCopy(stay)}</details>
+      <div class="rsteps">
+        <div class="rstep"><span class="rnum">1</span><div>
+          <button class="primary" data-action="export" ${checkStay(stay).length ? "disabled" : ""}>${ICON.download}${t("report.download")}</button>
+          ${stay.exportedAt ? `<div class="muted small">${t("report.downloaded", { date: esc(new Date(stay.exportedAt).toLocaleString(locale())) })}</div>` : ""}
+        </div></div>
+        <div class="rstep"><span class="rnum">2</span><div>${t("report.upload", { url: UBYPORT_URL })}</div></div>
+        <div class="rstep"><span class="rnum">3</span><div>${t("report.receipt")}
+          <button class="${stay.submittedAt ? "" : "success"}" data-action="toggle-submitted">${stay.submittedAt ? "↺ " + t("report.markUndone") : ICON.check + t("report.markDone")}</button></div></div>
+      </div>
+      <details><summary>${t("report.manual")}</summary>${renderManualCopy(stay)}</details>
     </section>
-    <button class="danger" data-action="delete-stay">Delete this stay</button>`;
+    <button class="danger" data-action="delete-stay">${t("stay.delete")}</button>`;
+}
+
+function passportArt() {
+  return `<svg viewBox="0 0 64 44" aria-hidden="true"><rect x="2" y="2" width="60" height="40" rx="5" class="pp-body"/>
+    <rect x="8" y="8" width="14" height="18" rx="2" class="pp-photo"/><rect x="27" y="9" width="28" height="3" rx="1.5" class="pp-line"/>
+    <rect x="27" y="16" width="20" height="3" rx="1.5" class="pp-line"/><rect x="27" y="23" width="24" height="3" rx="1.5" class="pp-line"/>
+    <rect x="8" y="32" width="48" height="2.4" rx="1.2" class="pp-mrz"/><rect x="8" y="36.5" width="48" height="2.4" rx="1.2" class="pp-mrz"/></svg>`;
+}
+
+function renderScanner() {
+  return `<div class="scanner" role="status">
+    <div class="scan-doc">${passportArt()}<span class="beam"></span></div>
+    <div class="scan-text" id="scan-text">${t("scan.1")}</div>
+    <small class="muted">${t("scan.time")}</small>
+  </div>`;
 }
 
 function renderDeadline(stay) {
   const deadline = stay.arrival ? reportDeadline(stay.arrival) : null;
-  return deadline && !stay.submittedAt
-    ? `<p class="muted small">Must be reported by <strong>${niceDate(deadline)}</strong> (3 working days after arrival).</p>`
-    : "";
+  return deadline && !stay.submittedAt ? `<p class="deadline">⏰ ${t("stay.deadline", { date: niceDate(deadline) })}</p>` : "";
 }
 
 function renderReportStatus(stay) {
   const errors = checkStay(stay);
   return errors.length
     ? `<ul class="errors">${errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>`
-    : `<p class="ok-text">✓ Everything required is filled in.</p>`;
+    : `<p class="all-good"><svg viewBox="0 0 24 24" class="draw-check"><circle cx="12" cy="12" r="10"/><path d="m7 12.5 3.3 3.3L17 9"/></svg>${t("report.allGood")}</p>`;
 }
 
 function renderGuestTitle(g, i) {
-  const mrzBadge = g.mrz
+  const badge = g.mrz
     ? g.mrz.valid
-      ? `<span class="pill ok" title="Check digits in the passport code match">✓ verified by passport code</span>`
-      : `<span class="pill bad">⚠ passport code check failed</span>`
-    : `<span class="pill muted-pill">not verified</span>`;
-  return `<strong>${i + 1}. ${esc(guestName(g))}</strong>${mrzBadge}`;
+      ? `<span class="pill ok verified" title="${esc(t("guest.verifiedTitle"))}">${ICON.check}${t("guest.verified")}</span>`
+      : `<span class="pill bad">⚠ ${t("guest.mrzFailed")}</span>`
+    : `<span class="pill muted">${t("guest.notVerified")}</span>`;
+  return `${avatar(g)}<span class="guest-name"><strong>${esc(guestName(g))}</strong>
+    <span class="muted small">${g.nationality ? `${flag(g.nationality)} ${esc(countryName(g.nationality))}` : `#${i + 1}`}</span></span>${badge}`;
 }
 
 function renderGuestStatus(stay, g) {
@@ -261,51 +494,58 @@ function renderGuestStatus(stay, g) {
   );
 }
 
+function nationalityOptions(selected) {
+  const lang = getLang();
+  return Object.keys(COUNTRIES)
+    .map((code) => [code, countryName(code)])
+    .sort((a, b) => a[1].localeCompare(b[1], lang))
+    .map(([code, name]) => `<option value="${code}" ${code === selected ? "selected" : ""}>${flag(code)} ${esc(name)} (${code})</option>`)
+    .join("");
+}
+
 function renderGuest(stay, g, i) {
   const { errors } = checkGuest(g, stay);
   const f = (field, label, attrs = "") =>
     `<label>${label}<input data-guest="${g.id}" data-field="${field}" value="${esc(g[field])}" ${attrs}></label>`;
   return `
-  <div class="guest ${errors.length ? "has-errors" : ""}" data-guest-card="${g.id}">
-    <div class="row" data-status="guest-title">${renderGuestTitle(g, i)}</div>
+  <div class="guest ${errors.length ? "has-errors" : ""} ${freshGuests.has(g.id) ? "pop-in" : ""}" style="--i:${i}" data-guest-card="${g.id}">
+    <div class="guest-head" data-status="guest-title">${renderGuestTitle(g, i)}</div>
     <div class="two">
-      ${f("surname", "Surname", 'autocapitalize="words"')}
-      ${f("givenNames", "Given names", 'autocapitalize="words"')}
+      ${f("surname", t("f.surname"), 'autocapitalize="words"')}
+      ${f("givenNames", t("f.givenNames"), 'autocapitalize="words"')}
     </div>
     <div class="two">
-      <label>Date of birth<input type="date" data-guest="${g.id}" data-field="birthDate" value="${esc(g.birthDate)}"></label>
-      <label>Nationality
-        <select data-guest="${g.id}" data-field="nationality">
-          <option value="">— choose —</option>
-          ${Object.entries(COUNTRIES).map(([code, name]) => `<option value="${code}" ${code === g.nationality ? "selected" : ""}>${code} – ${esc(name)}</option>`).join("")}
-        </select>
+      <label>${t("f.birthDate")}<input type="date" data-guest="${g.id}" data-field="birthDate" value="${esc(g.birthDate)}"></label>
+      <label>${t("f.nationality")}
+        <select data-guest="${g.id}" data-field="nationality"><option value="">${t("stay.choose")}</option>${nationalityOptions(g.nationality)}</select>
       </label>
     </div>
     <div class="two">
-      ${f("documentNumber", "Passport / ID number", 'autocapitalize="characters" autocomplete="off"')}
-      ${f("visa", "Visa number (if any)", 'autocapitalize="characters"')}
+      ${f("documentNumber", t("f.documentNumber"), 'autocapitalize="characters" autocomplete="off"')}
+      ${f("visa", t("f.visa"), 'autocapitalize="characters"')}
     </div>
-    <label>Home address abroad
+    <label>${t("f.address")}
       <span class="inline">
-        <input data-guest="${g.id}" data-field="address" value="${esc(g.address)}" placeholder="Street, city, country">
-        <button class="small-btn" data-action="address-from-first" data-guest="${g.id}" title="Same address as guest 1">= guest 1</button>
+        <input data-guest="${g.id}" data-field="address" value="${esc(g.address)}" placeholder="${esc(t("f.addressPlaceholder"))}">
+        ${i > 0 ? `<button class="chip" data-action="address-from-first" data-guest="${g.id}" title="${esc(t("guest.sameAddressTitle"))}">${t("guest.sameAddress")}</button>` : ""}
       </span>
     </label>
     <div class="two">
-      <label>Purpose of stay
+      <label>${t("f.purpose")}
         <select data-guest="${g.id}" data-field="purpose">
-          ${Object.entries(PURPOSES).map(([code, name]) => `<option value="${code}" ${code === g.purpose ? "selected" : ""}>${code} – ${esc(name)}</option>`).join("")}
+          ${PURPOSE_CODES.map((code) => `<option value="${code}" ${code === g.purpose ? "selected" : ""}>${code} · ${esc(t("purpose." + code))}</option>`).join("")}
         </select>
       </label>
-      ${f("note", "Note to police (optional)")}
+      ${f("note", t("f.note"))}
     </div>
     <div data-status="guest">${renderGuestStatus(stay, g)}</div>
-    <button class="link danger-link" data-action="remove-guest" data-guest="${g.id}">Remove guest</button>
+    <button class="link danger-link" data-action="remove-guest" data-guest="${g.id}">${t("guest.remove")}</button>
   </div>`;
 }
 
 function renderManualCopy(stay) {
-  if (!stay.guests.length) return `<p class="muted">Add guests first.</p>`;
+  if (!stay.guests.length) return `<p class="muted">${t("report.manualEmpty")}</p>`;
+  // Labels stay in Czech: they match the fields of the Ubyport web form.
   return stay.guests
     .map((g) => {
       const rows = [
@@ -318,10 +558,10 @@ function renderManualCopy(stay) {
         ["Bydliště v domovském státě", g.address],
         ["Číslo cestovního dokladu", g.documentNumber],
         ["Číslo víza", g.visa],
-        ["Účel pobytu", `${g.purpose} – ${PURPOSES[g.purpose] || ""}`],
+        ["Účel pobytu", `${g.purpose} – ${tIn("cs", "purpose." + g.purpose)}`],
       ];
-      return `<table class="copy-table"><caption>${esc(guestName(g))}</caption>${rows
-        .map(([k, v]) => `<tr><th>${k}</th><td>${esc(v)}</td><td>${v ? `<button class="small-btn" data-action="copy" data-text="${esc(v)}">Copy</button>` : ""}</td></tr>`)
+      return `<table class="copy-table"><caption>${avatar(g)} ${esc(guestName(g))}</caption>${rows
+        .map(([k, v]) => `<tr><th>${k}</th><td>${esc(v)}</td><td>${v ? `<button class="chip" data-action="copy" data-text="${esc(v)}">${t("copy")}</button>` : ""}</td></tr>`)
         .join("")}</table>`;
     })
     .join("");
@@ -331,35 +571,79 @@ function renderSettings() {
   const s = state.settings;
   return `
     <section class="card">
-      <h2>Apartments</h2>
-      <p class="muted small">Copy these from your Ubyport registration. Each apartment registered separately has its own <strong>IDUB</strong> (accommodation ID).</p>
-      ${state.properties.map(renderProperty).join("")}
-      <button data-action="add-property">+ Add apartment</button>
+      <h2>🎨 ${t("set.look")}</h2>
+      <div class="theme-grid">${THEMES.map(
+        (th, i) => `<button class="theme-card ${s.theme === th.id ? "selected" : ""}" data-action="set-theme" data-theme-id="${th.id}" aria-pressed="${s.theme === th.id}">
+          <span class="theme-preview" data-theme="${th.id}">${skylineSvg(11 + i)}</span>
+          <span class="theme-name">${t(`theme.${th.id}.name`)}<span class="theme-check">${ICON.check}</span></span>
+          <span class="theme-tag">${t(`theme.${th.id}.tag`)}</span>
+        </button>`,
+      ).join("")}</div>
+      <label>${t("set.language")}</label>
+      <div class="segmented">${Object.entries(LANGS)
+        .map(([code]) => `<button class="${getLang() === code ? "on" : ""}" data-action="set-lang" data-lang="${code}">${{ en: "English", cs: "Čeština", ru: "Русский" }[code]}</button>`)
+        .join("")}</div>
     </section>
 
     <section class="card">
-      <h2>Passport reading</h2>
-      <p class="muted small">Photos are read by Claude (Anthropic). Create an API key at
-        <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> and add some credit (5 $ lasts a long time).
-        The key is stored only on this device.</p>
-      <label>Anthropic API key<input type="password" data-setting="apiKey" value="${esc(s.apiKey)}" placeholder="sk-ant-…" autocomplete="off"></label>
-      <label>Model
-        <select data-setting="model">${Object.entries(MODELS).map(([id, label]) => `<option value="${id}" ${id === s.model ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>
+      <h2>🏠 ${t("set.apartments")}</h2>
+      <p class="muted small">${t("set.apartmentsHint")}</p>
+      ${state.properties.map(renderProperty).join("")}
+      <button class="wide ghost" data-action="add-property">${t("set.addApartment")}</button>
+    </section>
+
+    <section class="card">
+      <h2>🔍 ${t("set.reading")}</h2>
+      <p class="muted small">${t("set.readingHint")}</p>
+      <label>${t("set.apiKey")}<input type="password" data-setting="apiKey" value="${esc(s.apiKey)}" placeholder="sk-ant-…" autocomplete="off"></label>
+      <label>${t("set.model")}
+        <select data-setting="model">${Object.entries(MODELS).map(([id, key]) => `<option value="${id}" ${id === s.model ? "selected" : ""}>${esc(t(key))}</option>`).join("")}</select>
       </label>
     </section>
 
     <section class="card">
-      <h2>Backup</h2>
-      <p class="muted small">Everything is stored only in this browser. Make a backup now and then — and before changing phones. Hosts must keep guest records for 6 years.</p>
+      <h2>💾 ${t("set.backup")}</h2>
+      <p class="muted small">${t("set.backupHint")}</p>
       <div class="row-buttons">
-        <button data-action="backup">Download backup</button>
-        <label class="button-like">Restore backup<input type="file" accept="application/json,.json" data-action="restore" hidden></label>
+        <button data-action="backup">${ICON.download}${t("set.download")}</button>
+        <label class="button-like">${t("set.restore")}<input type="file" accept="application/json,.json" data-action="restore" hidden></label>
       </div>
     </section>`;
 }
 
 function renderPropertySummary(p) {
-  return `<strong>${esc(p.label || "New apartment")}</strong> ${p.idub ? `<span class="muted small">IDUB ${esc(p.idub)}</span>` : `<span class="pill bad">IDUB missing</span>`}`;
+  return `<strong>${esc(p.label || p.name || t("set.newApartment"))}</strong> ${
+    p.idub ? `<span class="muted small">IDUB ${esc(p.idub)}</span>` : `<span class="pill bad">${t("set.idubMissing")}</span>`
+  }`;
+}
+
+function renderProperty(p) {
+  const f = (field, label, attrs = "") =>
+    `<label>${t(label)}<input data-property="${p.id}" data-field="${field}" value="${esc(p[field])}" ${attrs}></label>`;
+  return `
+  <details class="property" ${p.idub ? "" : "open"}>
+    <summary data-status="property" data-id="${p.id}">${renderPropertySummary(p)}</summary>
+    ${f("label", "p.label", `placeholder="${esc(t("p.labelPlaceholder"))}"`)}
+    <div class="two">${f("idub", "p.idub")}${f("abbr", "p.abbr")}</div>
+    ${f("name", "p.name")}
+    ${f("contact", "p.contact")}
+    <div class="two">${f("district", "p.district")}${f("municipality", "p.municipality")}</div>
+    <div class="two">${f("municipalityPart", "p.municipalityPart", `placeholder="${esc(t("p.municipalityPartPlaceholder"))}"`)}${f("street", "p.street")}</div>
+    <div class="three">${f("houseNumber", "p.houseNumber")}${f("orientationNumber", "p.orientationNumber")}${f("zip", "p.zip", 'inputmode="numeric"')}</div>
+    <button class="link danger-link" data-action="remove-property" data-id="${p.id}">${t("set.removeApartment")}</button>
+  </details>`;
+}
+
+function renderHelp() {
+  const steps = ["📱", "📷", "🔍", "⬆️", "🎉"];
+  return `
+  <section class="card prose">
+    <ol class="help-steps">${steps.map((icon, i) => `<li style="--i:${i}"><span class="help-icon">${icon}</span><span>${t(`help.s${i + 1}`)}</span></li>`).join("")}</ol>
+  </section>
+  <section class="card prose">
+    <h2>💡 ${t("help.rules")}</h2>
+    <ul>${[1, 2, 3].map((i) => `<li>${t(`help.r${i}`)}</li>`).join("")}</ul>
+  </section>`;
 }
 
 // Updates validation messages in place, leaving the inputs alone, so focus and
@@ -370,6 +654,8 @@ function refreshStatus() {
     const set = (sel, html) => document.querySelectorAll(sel).forEach((el) => (el.innerHTML = html));
     set('[data-status="report"]', renderReportStatus(stay));
     set('[data-status="deadline"]', renderDeadline(stay));
+    set('[data-status="stepper"]', renderStepper(stay));
+    document.getElementById("hero-text").innerHTML = renderHeroText();
     const exportBtn = document.querySelector('[data-action="export"]');
     if (exportBtn) exportBtn.disabled = checkStay(stay).length > 0;
     stay.guests.forEach((g, i) => {
@@ -386,52 +672,7 @@ function refreshStatus() {
   });
 }
 
-function renderProperty(p) {
-  const f = (field, label, attrs = "") =>
-    `<label>${label}<input data-property="${p.id}" data-field="${field}" value="${esc(p[field])}" ${attrs}></label>`;
-  return `
-  <details class="property" ${p.idub ? "" : "open"}>
-    <summary data-status="property" data-id="${p.id}">${renderPropertySummary(p)}</summary>
-    ${f("label", "Your name for it", 'placeholder="e.g. Vinohrady 2+kk"')}
-    <div class="two">${f("idub", "IDUB (Ubyport ID)")}${f("abbr", "Short code (zkratka)")}</div>
-    ${f("name", "Accommodation provider (ubytovatel)")}
-    ${f("contact", "Contact (phone / e-mail)")}
-    <div class="two">${f("district", "District (okres)")}${f("municipality", "Municipality (obec)")}</div>
-    <div class="two">${f("municipalityPart", "Part of municipality (část obce)", 'placeholder="e.g. Vinohrady"')}${f("street", "Street")}</div>
-    <div class="three">${f("houseNumber", "No. (č. p.)")}${f("orientationNumber", "No. (č. o.)")}${f("zip", "Postcode (PSČ)", 'inputmode="numeric"')}</div>
-    <button class="link danger-link" data-action="remove-property" data-id="${p.id}">Remove apartment</button>
-  </details>`;
-}
-
-function renderHelp() {
-  return `
-  <section class="card prose">
-    <h2>How it works</h2>
-    <ol>
-      <li><strong>Guest sends passport photos</strong> on WhatsApp. Use “Copy message for guest” on a stay to ask for photos <em>and</em> home address.</li>
-      <li>Save the photos to the phone, then on the stay tap <strong>Add passport / ID photos</strong>. Claude reads the names, dates and numbers.</li>
-      <li>Check each guest. A green <em>verified by passport code</em> badge means the check digits in the machine-readable lines matched, so the number and birth date are almost certainly right. Fill in the home address.</li>
-      <li>Tap <strong>Download Ubyport file</strong>, open Ubyport, upload the .unl file, and check the receipt (doručenka) for rejected records.</li>
-      <li>Mark the stay as reported.</li>
-    </ol>
-    <h3>Rules worth remembering</h3>
-    <ul>
-      <li>Report every guest who is <strong>not a Czech citizen</strong> (EU citizens too), within <strong>3 working days</strong> of arrival.</li>
-      <li>The photos are not stored by this app — only the typed details, on this device.</li>
-      <li>If Ubyport rejects a record, fix the guest here, download a new file and upload again.</li>
-    </ul>
-  </section>`;
-}
-
 // ---------------------------------------------------------------- actions
-
-function guestMessage() {
-  return `Hello and welcome to Prague! 🙂
-Czech law requires us to register every foreign guest with the police within 3 days. Could you please send:
-1) a clear photo of the photo page of each guest's passport or ID card (for ID cards, front and back), taken flat, without glare, with all 4 corners visible
-2) your home address (street, city, country)
-Thank you!`;
-}
 
 function exportFiles(stays) {
   const byProperty = new Map();
@@ -450,32 +691,43 @@ function exportFiles(stays) {
     group.forEach((s) => (s.exportedAt = now.toISOString()));
   }
   save();
-  showFlash(
-    lossy.size ? "error" : "ok",
-    lossy.size
-      ? `Downloaded, but these characters can't be sent to Ubyport and became "?": ${[...lossy].join(" ")}. Retype those names in Latin letters.`
-      : `Downloaded ${byProperty.size} file${byProperty.size === 1 ? "" : "s"}. Now upload in Ubyport.`,
-  );
+  if (lossy.size) showFlash("error", t("toast.lossy", { chars: [...lossy].join(" ") }));
+  else showFlash("ok", t("toast.downloaded", { n: byProperty.size }));
 }
 
 async function addPhotos(stay, files) {
   if (!files.length) return;
-  if (!state.settings.apiKey) return showFlash("error", "Add your Anthropic API key in Settings first.");
-  busy = { stayId: stay.id, text: `Reading ${files.length} photo${files.length === 1 ? "" : "s"}…` };
+  if (!state.settings.apiKey) return showFlash("error", t("toast.needKey"));
+  busy = { stayId: stay.id };
   flash = null;
   render();
   try {
-    const { guests, unusable } = await readDocuments(files, state.settings);
-    for (const g of guests) stay.guests.push({ ...emptyGuest(), ...g, id: uid() });
+    const { guests, unusable } = await readDocuments(files, { ...state.settings, noteLanguage: t("noteLanguage") });
+    for (const g of guests) {
+      const guest = { ...emptyGuest(), ...g, id: uid() };
+      freshGuests.add(guest.id);
+      stay.guests.push(guest);
+    }
     save();
     busy = null;
-    const parts = [`Found ${guests.length} document${guests.length === 1 ? "" : "s"}. Please check the details.`];
-    if (unusable.length) parts.push("Skipped: " + unusable.join("; "));
-    showFlash(guests.length ? "ok" : "error", parts.join(" "));
+    const parts = [guests.length ? t("toast.found", { n: guests.length }) : t("toast.foundNone")];
+    if (unusable.length) parts.push(t("toast.skipped", { list: unusable.join("; ") }));
+    showFlash(guests.length ? "ok" : "error", parts.join(" · "));
   } catch (err) {
     busy = null;
-    showFlash("error", describeApiError(err));
+    const { key, detail } = apiErrorKey(err);
+    showFlash("error", t(key, { detail }));
   }
+}
+
+function changeLanguage(code) {
+  state.settings.lang = code;
+  setLang(code);
+  save();
+  mountShell();
+  lastViewKey = null;
+  shownFlash = undefined;
+  render();
 }
 
 document.addEventListener("click", (e) => {
@@ -503,13 +755,16 @@ document.addEventListener("click", (e) => {
       view = { name: "stay", id: el.dataset.id };
       flash = null;
       break;
-    case "add-guest":
-      stay.guests.push(emptyGuest());
+    case "add-guest": {
+      const g = emptyGuest();
+      freshGuests.add(g.id);
+      stay.guests.push(g);
       save();
       break;
+    }
     case "remove-guest": {
       const g = stay.guests.find((x) => x.id === el.dataset.guest);
-      if (!confirm(`Remove ${guestName(g)}?`)) return;
+      if (!confirm(t("confirm.removeGuest", { name: guestName(g) }))) return;
       stay.guests = stay.guests.filter((x) => x.id !== g.id);
       save();
       break;
@@ -532,17 +787,18 @@ document.addEventListener("click", (e) => {
       save();
       if (stay.submittedAt) {
         view = { name: "stays" };
-        flash = { kind: "ok", text: "Marked as reported." };
+        flash = { kind: "ok", text: t("toast.reported") };
+        confetti();
       }
       break;
     case "delete-stay":
-      if (!confirm("Delete this stay and its guests from this device? Hosts must keep guest records for 6 years.")) return;
+      if (!confirm(t("confirm.deleteStay"))) return;
       state.stays = state.stays.filter((s) => s.id !== stay.id);
       save();
       view = { name: "stays" };
       break;
     case "copy-guest-message":
-      copy(guestMessage());
+      copy(tIn(el.dataset.lang, "guestMessage"));
       return;
     case "copy":
       copy(el.dataset.text);
@@ -553,10 +809,30 @@ document.addEventListener("click", (e) => {
       break;
     case "remove-property": {
       const used = state.stays.some((s) => s.propertyId === el.dataset.id);
-      if (!confirm(used ? "Some stays use this apartment. Remove it anyway?" : "Remove this apartment?")) return;
+      if (!confirm(t(used ? "confirm.removeUsedApartment" : "confirm.removeApartment"))) return;
       state.properties = state.properties.filter((p) => p.id !== el.dataset.id);
       save();
       break;
+    }
+    case "set-theme":
+      state.settings.theme = el.dataset.themeId;
+      save();
+      withTransition(() => {
+        applyTheme(state.settings.theme);
+        document.querySelectorAll(".theme-card").forEach((c) => {
+          const on = c.dataset.themeId === state.settings.theme;
+          c.classList.toggle("selected", on);
+          c.setAttribute("aria-pressed", on);
+        });
+      });
+      return;
+    case "set-lang":
+      changeLanguage(el.dataset.lang);
+      return;
+    case "cycle-lang": {
+      const codes = Object.keys(LANGS);
+      changeLanguage(codes[(codes.indexOf(getLang()) + 1) % codes.length]);
+      return;
     }
     case "backup":
       download(`ubyport-helper-backup-${today()}.json`, JSON.stringify({ ...state, settings: { ...state.settings, apiKey: "" } }, null, 2), "application/json");
@@ -599,13 +875,15 @@ document.addEventListener("change", async (e) => {
     if (!file) return;
     try {
       const data = JSON.parse(await file.text());
-      if (!Array.isArray(data.stays) || !Array.isArray(data.properties)) throw new Error("not a backup file");
-      if (!confirm(`Replace everything on this device with the backup (${data.stays.length} stays)?`)) return;
-      state = { ...data, settings: { ...data.settings, apiKey: state.settings.apiKey } };
+      if (!Array.isArray(data.stays) || !Array.isArray(data.properties)) throw new Error(t("toast.notBackup"));
+      if (!confirm(t("confirm.restore", { n: data.stays.length }))) return;
+      state = { ...data, settings: { ...defaultSettings(), ...data.settings, apiKey: state.settings.apiKey } };
       save();
-      showFlash("ok", "Backup restored.");
+      applyTheme(state.settings.theme);
+      changeLanguage(state.settings.lang || getLang());
+      showFlash("ok", t("toast.restored"));
     } catch (err) {
-      showFlash("error", "Couldn't restore: " + err.message);
+      showFlash("error", t("toast.restoreFailed", { msg: err.message }));
     }
     return;
   }
@@ -613,4 +891,7 @@ document.addEventListener("change", async (e) => {
   el.dispatchEvent(new Event("input", { bubbles: true }));
 });
 
+setLang(state.settings.lang || detectLang());
+applyTheme(state.settings.theme);
+mountShell();
 render();

@@ -85,13 +85,12 @@ export function toGuest(doc) {
   const mrz = doc.mrz_lines.length ? parseMrz(doc.mrz_lines) : null;
   if (mrz) {
     guest.mrz = { valid: mrz.valid, checks: mrz.checks, mismatches: [] };
-    const labels = { documentNumber: "document number", birthDate: "date of birth", nationality: "nationality" };
     // When the MRZ checks out it is the most reliable source for numbers and dates.
     for (const field of ["documentNumber", "birthDate", "nationality"]) {
       const fromMrz = mrz[field];
       const fieldValid = field === "nationality" ? mrz.valid : mrz.checks[field];
       if (fromMrz && fieldValid && fromMrz !== guest[field]) {
-        guest.mrz.mismatches.push(`${labels[field]}: photo "${guest[field]}" → MRZ "${fromMrz}"`);
+        guest.mrz.mismatches.push({ field, from: guest[field], to: fromMrz });
         guest[field] = fromMrz;
       }
     }
@@ -99,7 +98,11 @@ export function toGuest(doc) {
   return guest;
 }
 
-export async function readDocuments(files, { apiKey, model }) {
+function codedError(code) {
+  return Object.assign(new Error(code), { code });
+}
+
+export async function readDocuments(files, { apiKey, model, noteLanguage = "English" }) {
   const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 2 });
 
   const content = [];
@@ -107,7 +110,7 @@ export async function readDocuments(files, { apiKey, model }) {
     content.push({ type: "text", text: `Image ${i + 1}:` });
     content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: await toJpegBase64(file) } });
   }
-  content.push({ type: "text", text: "Extract every identity document in these images." });
+  content.push({ type: "text", text: `Extract every identity document in these images. Write "problems" and "unusable_images" in ${noteLanguage}.` });
 
   const request = {
     model,
@@ -121,23 +124,26 @@ export async function readDocuments(files, { apiKey, model }) {
     ? await client.messages.create(request)
     : await client.beta.messages.create({ ...request, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" });
 
-  if (response.stop_reason === "refusal") throw new Error("Claude declined to read these images. Please type the details in manually.");
-  if (response.stop_reason === "max_tokens") throw new Error("The response was cut off. Try fewer photos at once.");
+  if (response.stop_reason === "refusal") throw codedError("refusal");
+  if (response.stop_reason === "max_tokens") throw codedError("truncated");
 
   const text = response.content.filter((b) => b.type === "text").map((b) => b.text).join("");
   const parsed = JSON.parse(text);
   return { guests: parsed.documents.map(toGuest), unusable: parsed.unusable_images };
 }
 
-export function describeApiError(err) {
-  if (err instanceof Anthropic.AuthenticationError) return "The API key was rejected. Check it in Settings.";
-  if (err instanceof Anthropic.PermissionDeniedError) return "This API key isn't allowed to use that model.";
-  if (err instanceof Anthropic.RateLimitError) return "Too many requests right now — wait a minute and try again.";
+// Maps a failure to a translation key ("err.*") plus a detail string.
+export function apiErrorKey(err) {
+  if (err?.code === "refusal") return { key: "err.refusal" };
+  if (err?.code === "truncated") return { key: "err.truncated" };
+  if (err instanceof Anthropic.AuthenticationError) return { key: "err.auth" };
+  if (err instanceof Anthropic.PermissionDeniedError) return { key: "err.permission" };
+  if (err instanceof Anthropic.RateLimitError) return { key: "err.rate" };
   if (err instanceof Anthropic.BadRequestError) {
-    if (/credit balance/i.test(err.message)) return "Your Anthropic account is out of credit. Top it up at console.anthropic.com.";
-    return `Request rejected: ${err.message}`;
+    if (/credit balance/i.test(err.message)) return { key: "err.credit" };
+    return { key: "err.badRequest", detail: err.message };
   }
-  if (err instanceof Anthropic.InternalServerError) return "Anthropic's servers had a problem. Try again in a moment.";
-  if (err instanceof Anthropic.APIConnectionError) return "Couldn't reach Anthropic. Check the internet connection.";
-  return err?.message || String(err);
+  if (err instanceof Anthropic.InternalServerError) return { key: "err.server" };
+  if (err instanceof Anthropic.APIConnectionError) return { key: "err.network" };
+  return { key: "err.other", detail: err?.message || String(err) };
 }
