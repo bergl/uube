@@ -719,15 +719,11 @@ const ru = {
 };
 
 const DICT = { en, cs, ru };
-let lang = "en";
 
-export function detectLang() {
-  const code = (navigator.language || "en").slice(0, 2).toLowerCase();
-  if (DICT[code]) return code;
-  if (code === "sk") return "cs";
-  if (["uk", "be", "kk"].includes(code)) return "ru";
-  return "en";
-}
+// Used until a language is picked with the globe button or in Settings.
+export const DEFAULT_LANG = "ru";
+
+let lang = DEFAULT_LANG;
 
 export function setLang(code) {
   lang = DICT[code] ? code : "en";

@@ -2,7 +2,7 @@ import { COUNTRIES } from "./countries.js";
 import { COUNTRY_INFO } from "./country-names.js";
 import { reportDeadline } from "./deadline.js";
 import { apiErrorKey, readDocuments } from "./extract.js";
-import { LANGS, detectLang, getLang, locale, setLang, t, tIn } from "./i18n.js";
+import { DEFAULT_LANG, LANGS, getLang, locale, setLang, t, tIn } from "./i18n.js";
 import { skylineSvg } from "./scenery.js";
 import { DEFAULT_THEME, THEMES, applyTheme } from "./themes.js";
 import { PURPOSE_CODES, buildUnl, czDate, encodeCp1250, unlFileName } from "./unl.js";
@@ -891,7 +891,7 @@ document.addEventListener("change", async (e) => {
   el.dispatchEvent(new Event("input", { bubbles: true }));
 });
 
-setLang(state.settings.lang || detectLang());
+setLang(state.settings.lang || DEFAULT_LANG);
 applyTheme(state.settings.theme);
 mountShell();
 render();

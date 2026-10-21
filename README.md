@@ -18,7 +18,7 @@ Passport photo from WhatsApp → Claude reads the document → you check the det
 - Leaves out Czech citizens, who are not reported.
 - No server. All data stays in the browser's local storage. Use JSON backup and restore when changing phones.
 - Five themes: Praha (golden hour), Prague by night, Vltava, Petřín in spring, and Classic, which follows the phone's dark mode.
-- English, Czech and Russian, chosen from the phone's language and switchable with the globe button.
+- English, Czech and Russian. Russian is the default; switch with the globe button or in Settings.
 
 ## Using it
 
