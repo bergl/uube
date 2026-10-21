@@ -8,17 +8,21 @@ Passport photo from WhatsApp → Claude reads the document → you check the det
 
 ## Features
 
-- Several apartments, each with its own Ubyport ID (IDUB).
-- Reads passports and ID cards from photos (several at once; ID front and back are merged).
-- Checks the passport's machine-readable zone (MRZ) check digits and fixes misread numbers and dates.
+- Several apartments, each with its own Ubyport ID (IDUB) and colour.
+- Reads passports and ID cards from photos. Photos wait in a tray first, where you can rotate or remove them. You can also paste a photo copied in WhatsApp, or drop one onto the page on a computer. Reading shows progress and can be cancelled.
+- Re-checks the passport's machine-readable zone (MRZ) check digits after every edit, and fixes misread numbers and dates.
+- Every guest must be confirmed with **Looks good** before export. Guests show as compact rows, with their photo beside the fields while you check them.
+- Tracks what was exported and reported. If the data changes afterwards, the stay shows **Changed since export** or **Changed after reporting**.
+- Reporting is confirmed in a dialog: the method, the receipt check and an optional reference.
 - Shows the reporting deadline: 3 working days after arrival, skipping weekends and Czech public holidays.
-- Generates the Ubyport UNL import file (Windows-1250, CRLF), one file per apartment.
+- Generates the Ubyport UNL import file (Windows-1250, CRLF), one file per apartment. Characters Ubyport can't accept are flagged before downloading.
 - Copy buttons for each field, for typing into the Ubyport web form instead.
-- A ready-made WhatsApp message asking guests for photos and their home address.
-- Leaves out Czech citizens, who are not reported.
-- No server. All data stays in the browser's local storage. Use JSON backup and restore when changing phones.
+- Ready-made WhatsApp messages asking guests for photos and their home address, in English, Czech and Russian.
+- Leaves out Czech citizens, who are not reported. Guests can also be entered by hand, with no API key.
+- No server. Data stays in the browser, with backup reminders, sharing to iCloud Drive or Files, and checked restore with Undo.
 - Five themes: Praha (golden hour), Prague by night, Vltava, Petřín in spring, and Classic, which follows the phone's dark mode.
 - English, Czech and Russian. Russian is the default; switch with the globe button or in Settings.
+- The Back button works, Undo replaces confirmation dialogs, and every theme passes an automated accessibility scan.
 
 ## Using it
 
@@ -40,9 +44,12 @@ The page is public, but it holds no data. GitHub Pages only serves the code, and
 
 ```bash
 npm ci
-npm test        # UNL format, MRZ check digits, deadline calculation
-npm run build   # src/ → index.html (single self-contained file, served by GitHub Pages)
+npm test            # unit tests: UNL format, MRZ, deadlines, workflow rules, backups
+npm run build       # src/ + public/ -> dist/ (one self-contained page, icons, manifest)
+npm run test:e2e    # browser tests against dist/, with the Claude API mocked
 ```
+
+Each push to `main` runs both test suites in GitHub Actions, then builds and deploys `dist/` to GitHub Pages (`.github/workflows/pages.yml`).
 
 | File | Purpose |
 |---|---|
@@ -51,6 +58,8 @@ npm run build   # src/ → index.html (single self-contained file, served by Git
 | `src/extract.js` | Claude API call with structured JSON output |
 | `src/deadline.js` | Reporting deadline in Czech working days |
 | `src/app.js` | User interface |
+| `src/validate.js` | Completeness, review, export and report rules |
+| `src/store.js` | Saving, migration, backups and restore checks |
 | `src/i18n.js` | English, Czech and Russian translations |
 | `src/themes.js`, `src/scenery.js` | Colour themes and the Prague skyline |
 | `src/country-names.js` | Country names in three languages, plus flag codes (generated) |

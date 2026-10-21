@@ -63,6 +63,7 @@ let saveStatus = "saved";
 let storageMode = "unsupported";
 let pointerDown = false;
 let refreshPending = false;
+let stayRefreshTimer = null;
 const freshGuests = new Set();
 const photos = new Map(); // guest id → [{ url, rotation }], kept in memory only
 const expanded = new Set(); // guest ids open for editing
@@ -1519,7 +1520,13 @@ document.addEventListener("input", (e) => {
     state.settings[el.dataset.setting] = el.value.trim();
   } else return;
   save();
-  refreshStatus(onlyGuest);
+  if (!onlyGuest) return refreshStatus();
+  // While typing a guest's details, update that guest now and the rest of the page once typing pauses.
+  const stay = findStay(view.id);
+  const index = stay.guests.findIndex((g) => g.id === onlyGuest);
+  refreshGuest(stay, stay.guests[index], index);
+  clearTimeout(stayRefreshTimer);
+  stayRefreshTimer = setTimeout(() => refreshStatus(onlyGuest), 180);
 });
 
 document.addEventListener("change", async (e) => {

@@ -24,6 +24,7 @@
     --far: #c99a8c; --near: #4b2f38; --river: #6d9bb2; --sun: #ffcf6e; --cloud: rgba(255,255,255,.8); --window: #ffd46b;
     --av-l: 86%; --av-tl: 30%;
     --show-sun: inline; --show-stars: none; --show-clouds: inline; --show-birds: inline; --show-windows: none; --show-petals: none;
+    --play-sun: running; --play-stars: paused; --play-clouds: running; --play-birds: running; --play-windows: paused; --play-petals: paused;
     color-scheme: light;
   }
   [data-theme="night"] {
@@ -34,6 +35,7 @@
     --far: #1c2147; --near: #05070f; --river: #18244d; --sun: #fdf3c8; --cloud: rgba(255,255,255,.12); --window: #ffd36b;
     --av-l: 32%; --av-tl: 88%;
     --show-sun: inline; --show-stars: inline; --show-clouds: none; --show-birds: none; --show-windows: inline; --show-petals: none;
+    --play-sun: running; --play-stars: running; --play-clouds: paused; --play-birds: paused; --play-windows: running; --play-petals: paused;
     color-scheme: dark;
   }
   [data-theme="vltava"] {
@@ -44,6 +46,7 @@
     --far: #93bcc6; --near: #1c4552; --river: #3a95a7; --sun: #fff0a8; --cloud: rgba(255,255,255,.9); --window: #ffd46b;
     --av-l: 87%; --av-tl: 28%;
     --show-sun: inline; --show-stars: none; --show-clouds: inline; --show-birds: inline; --show-windows: none; --show-petals: none;
+    --play-sun: running; --play-stars: paused; --play-clouds: running; --play-birds: running; --play-windows: paused; --play-petals: paused;
     color-scheme: light;
   }
   [data-theme="petrin"] {
@@ -54,6 +57,7 @@
     --far: #a7c8a3; --near: #2e4a35; --river: #79b5a3; --sun: #ffe08f; --cloud: rgba(255,255,255,.85); --window: #ffd46b;
     --av-l: 88%; --av-tl: 28%;
     --show-sun: inline; --show-stars: none; --show-clouds: inline; --show-birds: none; --show-windows: none; --show-petals: inline;
+    --play-sun: running; --play-stars: paused; --play-clouds: running; --play-birds: paused; --play-windows: paused; --play-petals: running;
     color-scheme: light;
   }
   [data-theme="classic"] {
@@ -64,6 +68,7 @@
     --far: #34699c; --near: #163a5c; --river: #2a5f90; --sun: #ffffff; --cloud: rgba(255,255,255,.18); --window: #ffd46b;
     --av-l: 88%; --av-tl: 30%;
     --show-sun: none; --show-stars: none; --show-clouds: inline; --show-birds: none; --show-windows: none; --show-petals: none;
+    --play-sun: paused; --play-stars: paused; --play-clouds: running; --play-birds: paused; --play-windows: paused; --play-petals: paused;
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
@@ -120,18 +125,18 @@
   .scene .shimmer rect:nth-child(2) { animation-delay: -1.5s; } .scene .shimmer rect:nth-child(3) { animation-delay: -3s; } .scene .shimmer rect:nth-child(4) { animation-delay: -4s; }
   .scene .deco-sun { display: var(--show-sun); }
   .scene .sun { fill: var(--sun); }
-  .scene .sun-glow { fill: var(--sun); opacity: .25; transform-box: fill-box; transform-origin: center; animation: glow 6s ease-in-out infinite; }
+  .scene .sun-glow { fill: var(--sun); opacity: .25; transform-box: fill-box; transform-origin: center; animation: glow 6s ease-in-out infinite; animation-play-state: var(--play-sun); }
   .scene .deco-stars { display: var(--show-stars); fill: #fff; }
-  .scene .deco-stars circle { animation: twinkle 3.2s ease-in-out infinite; }
+  .scene .deco-stars circle { animation: twinkle 3.2s ease-in-out infinite; animation-play-state: var(--play-stars); }
   .scene .deco-clouds { display: var(--show-clouds); fill: var(--cloud); }
-  .scene .cloud { animation: drift 46s linear infinite; }
+  .scene .cloud { animation: drift 46s linear infinite; animation-play-state: var(--play-clouds); }
   .scene .cloud.c2 { animation-duration: 64s; animation-delay: -30s; }
-  .scene .deco-birds { display: var(--show-birds); stroke: var(--near); stroke-width: .8; fill: none; animation: fly 30s linear infinite; }
+  .scene .deco-birds { display: var(--show-birds); stroke: var(--near); stroke-width: .8; fill: none; animation: fly 30s linear infinite; animation-play-state: var(--play-birds); }
   .scene .deco-windows { display: var(--show-windows); fill: var(--window); }
-  .scene .deco-windows rect { animation: twinkle 7s ease-in-out infinite; }
+  .scene .deco-windows rect { animation: twinkle 7s ease-in-out infinite; animation-play-state: var(--play-windows); }
   .scene .deco-windows rect:nth-child(3n) { animation-delay: -2s; } .scene .deco-windows rect:nth-child(4n) { animation-delay: -4.5s; }
   .scene .deco-petals { display: var(--show-petals); fill: var(--accent-2); opacity: .8; }
-  .scene .deco-petals ellipse { animation: petal 10s linear infinite; transform-box: fill-box; }
+  .scene .deco-petals ellipse { animation: petal 10s linear infinite; transform-box: fill-box; animation-play-state: var(--play-petals); }
   /* Wider than a phone: the header becomes a banner as wide as the content column,
      and the skyline keeps its proportions instead of being cropped into giant blocks. */
   @media (min-width: 700px) {
