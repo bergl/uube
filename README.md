@@ -25,6 +25,15 @@ Open the GitHub Pages URL on the phone and choose *Add to Home Screen*. In **Set
 1. Add each apartment using the details from its Ubyport registration.
 2. Paste an Anthropic API key from [console.anthropic.com](https://console.anthropic.com/settings/keys). The key is stored only on the device. Photos go straight from the phone to the Anthropic API and are not kept by the app.
 
+## Privacy
+
+The page is public, but it holds no data. GitHub Pages only serves the code, and every visitor starts with an empty app.
+
+- Guest details, apartments and the API key are stored in the browser's `localStorage` on her device and never leave it.
+- Photos are resized in the browser and sent straight to the Anthropic API. They are not stored anywhere.
+- A Content-Security-Policy allows the page to connect only to `https://api.anthropic.com`. The browser blocks any other destination, even if the code were changed.
+- Downloaded `.unl` files and backups contain personal data. Keep them private and delete old copies.
+
 ## Development
 
 ```bash
