@@ -185,8 +185,8 @@ function avatar(g) {
 const propertyHue = (p) => (Number.isFinite(p?.hue) ? p.hue : (state.properties.indexOf(p) * 67 + 15) % 360);
 const aptDot = (p) => (p ? `<span class="apt-dot" style="--h:${propertyHue(p)}" aria-hidden="true"></span>` : "");
 
-function showFlash(kind, text, action) {
-  flash = { kind, text, action };
+function showFlash(kind, text, action, detail) {
+  flash = { kind, text, action, detail };
   render();
 }
 
@@ -444,9 +444,12 @@ function renderToast() {
     layer.innerHTML = "";
     return;
   }
-  layer.innerHTML = `<div class="toast ${flash.kind}" role="status">
-    <span class="toast-icon">${flash.kind === "ok" ? ICON.check : "!"}</span><span class="toast-text" data-action="dismiss-flash">${esc(flash.text)}</span>
-    ${flash.action ? `<button class="toast-action" data-action="toast-action">${esc(flash.action.label)}</button>` : ""}</div>`;
+  layer.innerHTML = `<div class="toast ${flash.kind}" role="${flash.kind === "error" ? "alert" : "status"}">
+    <span class="toast-icon">${flash.kind === "ok" ? ICON.check : "!"}</span>
+    <div class="toast-body"><span class="toast-text">${esc(flash.text)}</span>
+      ${flash.detail ? `<details class="toast-detail"><summary>${t("toast.details")}</summary><code>${esc(flash.detail)}</code></details>` : ""}</div>
+    ${flash.action ? `<button class="toast-action" data-action="toast-action">${esc(flash.action.label)}</button>` : ""}
+    <button class="toast-close" data-action="dismiss-flash" aria-label="${esc(t("toast.close"))}">${ICON.close}</button></div>`;
   if (flash.kind === "ok") {
     const mine = flash;
     toastTimer = setTimeout(() => {
@@ -1224,9 +1227,9 @@ async function readTray() {
     const partial = err.partial?.guests || [];
     addReadGuests(stay, items, partial);
     const { key, detail } = apiErrorKey(err);
-    const message = t(key, { detail });
+    const message = t(key);
     if (key === "toast.cancelled") showFlash("ok", message);
-    else showFlash("error", partial.length ? t("toast.partialError", { error: message }) : message);
+    else showFlash("error", partial.length ? t("toast.partialError", { error: message }) : message, null, detail);
   }
 }
 

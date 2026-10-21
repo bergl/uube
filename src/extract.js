@@ -171,19 +171,35 @@ export async function readDocuments(items, { apiKey, model, noteLanguage = "Engl
   return { guests, unusable };
 }
 
-// Maps a failure to a translation key ("err.*") plus a detail string.
+// Technical summary of an API error, shown behind "Details" so a screenshot is enough to diagnose it.
+function errorDetail(err) {
+  const body = err?.error?.error;
+  const parts = [err?.status, body?.type, body?.message || err?.message].filter(Boolean);
+  const id = err?.requestID || err?.error?.request_id;
+  return parts.join(" · ") + (id ? ` (${id})` : "");
+}
+
+// Maps a failure to a plain-language translation key ("err.*") plus the technical detail.
 export function apiErrorKey(err) {
   if (err?.code === "aborted" || err instanceof Anthropic.APIUserAbortError) return { key: "toast.cancelled" };
   if (err?.code === "refusal") return { key: "err.refusal" };
   if (err?.code === "truncated") return { key: "err.truncated" };
-  if (err instanceof Anthropic.AuthenticationError) return { key: "err.auth" };
-  if (err instanceof Anthropic.PermissionDeniedError) return { key: "err.permission" };
-  if (err instanceof Anthropic.RateLimitError) return { key: "err.rate" };
+  const detail = errorDetail(err);
+  const message = String(err?.error?.error?.message || err?.message || "");
+  if (err instanceof Anthropic.AuthenticationError) return { key: "err.auth", detail };
+  if (err instanceof Anthropic.PermissionDeniedError) return { key: "err.permission", detail };
+  if (err instanceof Anthropic.NotFoundError) return { key: "err.model", detail };
+  if (err instanceof Anthropic.RateLimitError) return { key: "err.rate", detail };
+  if (err?.status === 413) return { key: "err.tooLarge", detail };
+  if (err?.status === 529 || err?.error?.error?.type === "overloaded_error") return { key: "err.overloaded", detail };
   if (err instanceof Anthropic.BadRequestError) {
-    if (/credit balance/i.test(err.message)) return { key: "err.credit" };
-    return { key: "err.badRequest", detail: err.message };
+    if (/credit balance/i.test(message)) return { key: "err.credit", detail };
+    if (/workspace/i.test(message)) return { key: "err.workspace", detail };
+    if (/model/i.test(message)) return { key: "err.model", detail };
+    if (/too large|too long|image.*exceed/i.test(message)) return { key: "err.tooLarge", detail };
+    return { key: "err.badRequest", detail };
   }
-  if (err instanceof Anthropic.InternalServerError) return { key: "err.server" };
-  if (err instanceof Anthropic.APIConnectionError) return { key: "err.network" };
-  return { key: "err.other", detail: err?.message || String(err) };
+  if (err instanceof Anthropic.InternalServerError) return { key: "err.server", detail };
+  if (err instanceof Anthropic.APIConnectionError) return { key: "err.network", detail };
+  return { key: "err.other", detail: detail || String(err) };
 }

@@ -41,7 +41,7 @@ export const EXTRACTION = {
 
 export const PNG_1PX = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 
-export async function openApp({ viewport = { width: 390, height: 844 }, extraction = EXTRACTION, delayMs = 0, colorScheme = "light", settings = {} } = {}) {
+export async function openApp({ viewport = { width: 390, height: 844 }, extraction = EXTRACTION, delayMs = 0, colorScheme = "light", settings = {}, failWith = null } = {}) {
   const server = await serveDist();
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport, acceptDownloads: true, locale: "en-US", colorScheme });
@@ -50,6 +50,9 @@ export async function openApp({ viewport = { width: 390, height: 844 }, extracti
   await context.route("https://api.anthropic.com/**", async (route) => {
     requests.push(JSON.parse(route.request().postData()));
     if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+    if (failWith) {
+      return route.fulfill({ status: failWith.status, contentType: "application/json", headers: { "access-control-allow-origin": "*", "request-id": "req_test" }, body: JSON.stringify(failWith.body) }).catch(() => {});
+    }
     // The page may have cancelled the request in the meantime.
     await route.fulfill({
       status: 200,
@@ -63,7 +66,8 @@ export async function openApp({ viewport = { width: 390, height: 844 }, extracti
   });
   const page = await context.newPage();
   page.on("pageerror", (e) => errors.push(e.message));
-  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  // The browser logs every failed request; tests that simulate API errors expect those.
+  page.on("console", (m) => m.type() === "error" && !m.text().startsWith("Failed to load resource") && errors.push(m.text()));
   await page.goto(server.url);
   await page.evaluate((s) => localStorage.setItem("ubyport-helper-v1", JSON.stringify({ version: 2, settings: { lang: "en", ...s }, properties: [], stays: [] })), settings);
   await page.reload();

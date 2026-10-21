@@ -189,3 +189,23 @@ test("header text never overlaps the skyline or the header buttons", () =>
     }
     assert.deepEqual(problems, []);
   }));
+
+test("API errors are explained in plain words and can be closed", () =>
+  withApp({
+    failWith: { status: 400, body: { type: "error", error: { type: "invalid_request_error", message: "This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header with the ID of the workspace to use." }, request_id: "req_011" } },
+  }, async ({ page }) => {
+    await addApartment(page);
+    await page.click(".fab-wrap");
+    await page.setInputFiles("#photo-input", photoFiles(1));
+    await page.click('[data-action="tray-read"]');
+    const toast = page.locator(".toast.error");
+    await toast.waitFor();
+    const text = await toast.locator(".toast-text").innerText();
+    assert.match(text, /isn't linked to a workspace/);
+    assert.doesNotMatch(text, /invalid_request_error|\{/, "no raw JSON in the message");
+    assert.equal(await toast.locator(".toast-detail code").isVisible(), false, "technical details stay folded");
+    await toast.locator(".toast-detail summary").click();
+    assert.match(await toast.locator(".toast-detail code").innerText(), /400 · invalid_request_error · This API key is not scoped/);
+    await toast.locator(".toast-close").click();
+    assert.equal(await page.locator(".toast").count(), 0);
+  }));
