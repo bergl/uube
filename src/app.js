@@ -64,6 +64,7 @@ let storageMode = "unsupported";
 let pointerDown = false;
 let refreshPending = false;
 let stayRefreshTimer = null;
+let activeTab = null; // tab the highlight currently sits on
 const freshGuests = new Set();
 const photos = new Map(); // guest id → [{ url, rotation }], kept in memory only
 const expanded = new Set(); // guest ids open for editing
@@ -300,11 +301,12 @@ function mountShell() {
     </header>
     <div id="toast-layer" aria-live="polite"></div>
     <main id="view"></main>
-    <nav class="tabbar" id="tabbar"></nav>
+    <nav class="tabbar settling" id="tabbar"><span class="tab-indicator hidden" aria-hidden="true"></span>${renderTabbar()}</nav>
     <div id="sheet-layer"></div>
     <input type="file" id="photo-input" accept="image/*" multiple data-action="photos" class="visually-hidden" tabindex="-1" aria-hidden="true">
     <input type="file" id="restore-input" accept="application/json,.json" data-action="restore" class="visually-hidden" tabindex="-1" aria-hidden="true">`;
   watchHero();
+  activeTab = null;
 }
 
 // Pauses the skyline's animations while the header is scrolled out of view.
@@ -323,7 +325,7 @@ function render() {
   document.querySelector(".hero").classList.toggle("compact", view.name !== "stays");
   heroText.innerHTML = renderHeroText();
   document.getElementById("lang-label").textContent = LANGS[getLang()];
-  document.getElementById("tabbar").innerHTML = renderTabbar();
+  updateTabbar();
 
   if (key !== lastViewKey) {
     const firstRender = lastViewKey === null;
@@ -370,12 +372,67 @@ function renderHeroText() {
   return `<h1 tabindex="-1">${greeting()}&nbsp;<span class="wave">👋</span></h1><p>${esc(line)}</p>`;
 }
 
+// The tab bar is built once per language; navigation only moves its highlight.
 function renderTabbar() {
-  const current = (names) => (names.includes(view.name) ? 'class="tab on" aria-current="page"' : 'class="tab"');
   return `
-    <button ${current(["stays", "stay"])} data-action="nav" data-view="stays">${ICON.home}<span>${t("nav.stays")}</span></button>
+    <button class="tab" data-action="nav" data-view="stays">${ICON.home}<span>${t("nav.stays")}</span></button>
     <button class="fab-wrap" data-action="new-stay"><span class="fab">${ICON.plus}</span><span class="fab-label">${t("nav.newStay")}</span></button>
-    <button ${current(["settings"])} data-action="nav" data-view="settings">${ICON.cog}<span>${t("nav.settings")}</span></button>`;
+    <button class="tab" data-action="nav" data-view="settings">${ICON.cog}<span>${t("nav.settings")}</span></button>`;
+}
+
+function placeIndicator(bar, tab) {
+  const indicator = bar.querySelector(".tab-indicator");
+  indicator.classList.toggle("hidden", !tab);
+  if (!tab) return;
+  indicator.style.width = `${tab.offsetWidth}px`;
+  indicator.style.transform = `translateX(${tab.offsetLeft}px)`;
+}
+
+function updateTabbar() {
+  const bar = document.getElementById("tabbar");
+  const name = view.name === "stay" ? "stays" : view.name;
+  let active = null;
+  for (const tab of bar.querySelectorAll(".tab")) {
+    const on = tab.dataset.view === name;
+    tab.classList.toggle("on", on);
+    if (on) active = tab;
+    if (on) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  }
+  const moved = active && activeTab && active !== activeTab;
+  placeIndicator(bar, active);
+  if (moved && !reducedMotion) {
+    // A little stretch while the highlight travels, and a bounce of the icon it lands on.
+    bar.querySelector(".tab-indicator").animate([{ scale: "1 1" }, { scale: "1.22 .84" }, { scale: "1 1" }], { duration: 500, easing: "ease-out" });
+    active.querySelector("svg").animate([{ transform: "none" }, { transform: "translateY(-3px) scale(1.2)" }, { transform: "none" }], { duration: 450, easing: "cubic-bezier(.34,1.56,.64,1)" });
+  }
+  if (active || !activeTab) activeTab = active;
+  if (bar.classList.contains("settling")) requestAnimationFrame(() => requestAnimationFrame(() => bar.classList.remove("settling")));
+}
+
+// Like iOS: the bar gets smaller while scrolling down and comes back when scrolling up or at either end.
+function watchScroll() {
+  let lastY = scrollY;
+  let ticking = false;
+  addEventListener("scroll", () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => {
+      ticking = false;
+      const bar = document.getElementById("tabbar");
+      const y = scrollY;
+      const atEnd = innerHeight + y >= document.documentElement.scrollHeight - 48;
+      if (y < 80 || atEnd || y < lastY - 10) bar?.classList.remove("minimized");
+      else if (y > lastY + 10) bar?.classList.add("minimized");
+      if (Math.abs(y - lastY) > 10) lastY = y;
+    });
+  }, { passive: true });
+  addEventListener("resize", () => {
+    const bar = document.getElementById("tabbar");
+    bar.classList.add("settling");
+    placeIndicator(bar, bar.querySelector(".tab.on"));
+    requestAnimationFrame(() => bar.classList.remove("settling"));
+  });
 }
 
 function renderToast() {
@@ -1614,6 +1671,7 @@ setLang(state.settings.lang || DEFAULT_LANG);
 applyTheme(state.settings.theme);
 mountShell();
 render();
+watchScroll();
 requestPersistence().then((mode) => {
   storageMode = mode;
   if (view.name === "settings") render();
