@@ -1,0 +1,22 @@
+{
+  "name": "ubyport-helper",
+  "version": "1.0.0",
+  "description": "",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.131.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  },
+  "type": "module",
+  "private": true
+}

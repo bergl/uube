@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Ubyport">
+<meta name="theme-color" content="#1f4e79">
+<title>Ubyport Helper</title>
+<style>
+  :root {
+    --bg: #f4f6f9; --card: #fff; --text: #1b2430; --muted: #5d6b7c; --line: #d9dee6;
+    --accent: #1f4e79; --accent-text: #fff; --ok: #1d7a46; --ok-bg: #e3f4ea; --warn: #8a5a00; --warn-bg: #fff2d6;
+    --bad: #b42318; --bad-bg: #fde8e6; --input: #fff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161c; --card: #1b2129; --text: #e6eaf0; --muted: #9aa6b5; --line: #2e3743;
+      --accent: #5b9bd5; --accent-text: #0d1117; --ok: #5cc48a; --ok-bg: #173324; --warn: #f0b94a; --warn-bg: #3a2c0c;
+      --bad: #ff7b6e; --bad-bg: #3d1714; --input: #232b35;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px 16px calc(40px + env(safe-area-inset-bottom)); }
+  h2 { font-size: 1.15rem; margin: 18px 0 10px; }
+  .card h2 { margin-top: 0; }
+  h3 { font-size: 1rem; }
+  a { color: var(--accent); }
+  .top { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: calc(10px + env(safe-area-inset-top)) 16px 10px; background: var(--accent); color: var(--accent-text); }
+  .top button { background: none; border: 0; color: inherit; font: inherit; padding: 6px 8px; border-radius: 8px; margin: 0; white-space: nowrap; }
+  .top nav { display: flex; gap: 2px; }
+  .top .brand { font-weight: 700; padding-left: 0; }
+  @media (max-width: 400px) { .top { font-size: 15px; padding-left: 12px; padding-right: 12px; } .top nav button { padding: 6px; } }
+  .card, .guest, details { scroll-margin-top: 64px; }
+  .top nav button.on { background: rgba(255,255,255,.18); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin: 12px 0; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin: 10px 0 0; }
+  input, select { display: block; width: 100%; margin-top: 4px; padding: 10px 12px; font: inherit; font-size: 16px; color: var(--text);
+    background: var(--input); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .two, .three { display: grid; gap: 0 12px; grid-template-columns: 1fr 1fr; }
+  .three { grid-template-columns: 1fr 1fr 1fr; }
+  @media (max-width: 480px) { .two { grid-template-columns: 1fr; } }
+  .inline { display: flex; gap: 8px; align-items: center; }
+  .inline input { flex: 1; }
+  .inline .small-btn { margin-top: 4px; }
+  button, .button-like { font: inherit; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; margin: 8px 0 0; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .button-like { display: inline-block; font-size: 1rem; color: var(--text); }
+  .primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  .big { width: 100%; padding: 14px; font-size: 1.05rem; margin-top: 4px; }
+  .small-btn { padding: 6px 10px; font-size: .85rem; white-space: nowrap; margin: 0; }
+  .danger { color: var(--bad); border-color: var(--bad); background: transparent; width: 100%; margin-top: 20px; }
+  .link { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; margin: 0; }
+  .danger-link { color: var(--bad); font-size: .85rem; margin-top: 10px; }
+  .back { margin-bottom: 4px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .row h2 { margin: 0; }
+  .row-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+  .muted { color: var(--muted); }
+  .small { font-size: .85rem; }
+  .pill { font-size: .78rem; padding: 3px 9px; border-radius: 999px; white-space: nowrap; font-weight: 600; }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); }
+  .muted-pill { background: var(--bg); color: var(--muted); }
+  .count { background: var(--accent); color: var(--accent-text); border-radius: 999px; padding: 0 8px; font-size: .85rem; vertical-align: middle; }
+  .stay-card { display: block; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin: 0 0 10px; }
+  .stay-card .muted { margin-top: 2px; }
+  .notice { background: var(--warn-bg); color: var(--warn); padding: 12px 14px; border-radius: 12px; margin-bottom: 12px; }
+  .notice .link { color: inherit; font-weight: 600; }
+  .flash { max-width: 760px; margin: 12px auto 0; padding: 12px 14px; border-radius: 12px; cursor: pointer; width: calc(100% - 32px); }
+  .flash.ok { background: var(--ok-bg); color: var(--ok); }
+  .flash.error { background: var(--bad-bg); color: var(--bad); }
+  .upload { display: block; text-align: center; border: 2px dashed var(--accent); border-radius: 14px; padding: 18px 12px; margin: 12px 0; cursor: pointer; color: var(--text); }
+  .upload input { display: none; }
+  .upload span { display: block; font-weight: 600; font-size: 1.05rem; }
+  .upload small { display: block; color: var(--muted); margin-top: 4px; }
+  .upload.disabled { opacity: .8; cursor: progress; }
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .guest { border-top: 1px solid var(--line); padding: 14px 0 6px; }
+  .guest.has-errors { border-left: 3px solid var(--bad); padding-left: 10px; margin-left: -13px; }
+  ul.errors, ul.warnings { margin: 10px 0 0; padding-left: 20px; font-size: .88rem; }
+  ul.errors { color: var(--bad); }
+  ul.warnings { color: var(--warn); }
+  .ok-text { color: var(--ok); font-weight: 600; }
+  ol.steps { padding-left: 20px; }
+  ol.steps li { margin: 10px 0; }
+  ol.steps li button { margin: 4px 8px 0 0; }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; padding: 6px 0; }
+  .property { border-top: 1px solid var(--line); padding: 6px 0 10px; }
+  .history .stay-card { opacity: .8; }
+  .copy-table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: .9rem; }
+  .copy-table caption { text-align: left; font-weight: 700; padding: 6px 0; }
+  .copy-table th { text-align: left; font-weight: 400; color: var(--muted); padding: 5px 8px 5px 0; width: 40%; }
+  .copy-table td { padding: 5px 0; word-break: break-word; }
+  .copy-table td:last-child { text-align: right; width: 1%; }
+  .prose li { margin: 6px 0; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<noscript>This app needs JavaScript.</noscript>
+<!-- APP_SCRIPT -->
+</body>
+</html>
