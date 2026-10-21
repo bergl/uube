@@ -6,7 +6,7 @@
     "test": "test"
   },
   "scripts": {
-    "build": "node build.mjs --root",
+    "build": "node build.mjs",
     "test": "node --test test/unit/*.test.mjs",
     "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.mjs"
   },

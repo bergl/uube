@@ -21,10 +21,4 @@ writeFileSync("dist/index.html", html);
 cpSync("public", "dist", { recursive: true });
 writeFileSync("dist/.nojekyll", "");
 
-// Until GitHub Pages deploys from GitHub Actions, it serves the repository root,
-// so keep a copy there. Remove this once the Pages source is "GitHub Actions".
-if (process.argv.includes("--root")) {
-  writeFileSync("index.html", html);
-  cpSync("public", ".", { recursive: true });
-}
 console.log(`dist/index.html  ${(html.length / 1024).toFixed(0)} KB`);
