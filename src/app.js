@@ -1439,6 +1439,9 @@ document.addEventListener("toggle", (e) => {
 }, true);
 
 document.addEventListener("click", (e) => {
+  // "toggle" arrives a moment later; remember the new state now in case a render comes first.
+  const kept = e.target.closest("summary")?.parentElement;
+  if (kept?.dataset.keep) kept.open ? openDetails.delete(kept.dataset.keep) : openDetails.add(kept.dataset.keep);
   const el = e.target.closest("[data-action]");
   if (!el || (el.tagName === "INPUT" && el.type !== "button")) return;
   const action = el.dataset.action;

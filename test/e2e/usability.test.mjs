@@ -224,6 +224,7 @@ test("the web-form copy list stays open while copying, and Help shows how to add
     await openCard(page).locator('[data-field="surname"]').fill("Smith");
     await page.locator("#sec-report details summary").click();
     const row = page.locator(".copy-row", { hasText: "Příjmení" });
+    await row.waitFor();
     const box = await row.boundingBox();
     assert.ok(box.height < 80, `a copy row is ${box.height}px tall`);
     // Headless browsers differ in clipboard support, so record what the app copies.
