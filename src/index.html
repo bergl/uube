@@ -76,7 +76,9 @@
 
   /* ---------------------------------------------------------------- base */
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html { -webkit-text-size-adjust: 100%; background: var(--bg); }
+  /* The root background shows behind the iOS status bar and when pulling the page down,
+     so it matches the top of the header. The body paints the page colour itself. */
+  html { -webkit-text-size-adjust: 100%; background: var(--sky-1); transition: background-color .4s; }
   body {
     margin: 0; min-height: 100vh; color: var(--text);
     background: linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%) fixed;
