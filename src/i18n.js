@@ -325,6 +325,14 @@ const en = {
   "photo.zoom": "Tap to zoom",
   "photo.close": "Close",
 
+  "guests.allReviewed": "all reviewed",
+  "report.preview": "Preview",
+  "preview.title": "Ubyport file preview",
+  "preview.readable": "Readable",
+  "preview.raw": "Raw file",
+  "preview.header": "Accommodation (header line)",
+  "preview.created": "Created",
+  "preview.incomplete": "Not complete yet — the file can be downloaded once everything required is filled in.",
   noteLanguage: "English",
   guestMessage: `Hello and welcome to Prague! 🙂
 Czech law requires us to register every foreign guest with the police within 3 days. Could you please send:
@@ -654,6 +662,14 @@ const cs = {
   "photo.zoom": "Klepnutím přiblížíte",
   "photo.close": "Zavřít",
 
+  "guests.allReviewed": "všichni zkontrolováni",
+  "report.preview": "Náhled",
+  "preview.title": "Náhled souboru pro Ubyport",
+  "preview.readable": "Přehledně",
+  "preview.raw": "Surový soubor",
+  "preview.header": "Ubytovací zařízení (hlavička)",
+  "preview.created": "Vytvořeno",
+  "preview.incomplete": "Ještě není kompletní — soubor půjde stáhnout, až bude vše potřebné vyplněno.",
   noteLanguage: "Czech",
   guestMessage: `Dobrý den a vítejte v Praze! 🙂
 Podle českých zákonů musíme každého zahraničního hosta do 3 dnů nahlásit policii. Mohli byste nám prosím poslat:
@@ -983,6 +999,14 @@ const ru = {
   "photo.zoom": "Нажмите, чтобы увеличить",
   "photo.close": "Закрыть",
 
+  "guests.allReviewed": "все проверены",
+  "report.preview": "Просмотр",
+  "preview.title": "Предпросмотр файла для Ubyport",
+  "preview.readable": "Наглядно",
+  "preview.raw": "Исходный файл",
+  "preview.header": "Жильё (строка заголовка)",
+  "preview.created": "Создан",
+  "preview.incomplete": "Ещё не заполнено — файл можно будет скачать, когда всё необходимое будет заполнено.",
   noteLanguage: "Russian",
   guestMessage: `Здравствуйте и добро пожаловать в Прагу! 🙂
 По чешскому закону мы обязаны зарегистрировать каждого иностранного гостя в полиции в течение 3 дней. Пожалуйста, пришлите:

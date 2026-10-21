@@ -16,6 +16,8 @@ Passport photo from WhatsApp → Claude reads the document → you check the det
 - Reporting is confirmed in a dialog: the method, the receipt check and an optional reference.
 - Shows the reporting deadline: 3 working days after arrival, skipping weekends and Czech public holidays.
 - Generates the Ubyport UNL import file (Windows-1250, CRLF), one file per apartment. Characters Ubyport can't accept are flagged before downloading.
+- **Preview** shows the file before downloading, either as readable cards per guest or as the raw file.
+- Finished sections fold into a one-line summary (apartment and dates, guests reviewed). Tap to open them again.
 - Copy buttons for each field, for typing into the Ubyport web form instead.
 - Ready-made WhatsApp messages asking guests for photos and their home address, in English, Czech and Russian.
 - Leaves out Czech citizens, who are not reported. Guests can also be entered by hand, with no API key.

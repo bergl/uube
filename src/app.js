@@ -32,6 +32,7 @@ const ICON = {
   rotate: '<svg viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M19 4v4h-4"/></svg>',
   close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   chevron: '<svg viewBox="0 0 24 24"><path d="m9 5.5 6.5 6.5L9 18.5"/></svg>',
+  eye: '<svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>',
   lock: '<svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>',
 };
 
@@ -65,6 +66,7 @@ let pointerDown = false;
 let refreshPending = false;
 let stayRefreshTimer = null;
 let activeTab = null; // tab the highlight currently sits on
+const sectionOpen = new Map(); // "stayId:details" / "stayId:guests" → open?
 const freshGuests = new Set();
 const photos = new Map(); // guest id → [{ url, rotation }], kept in memory only
 const expanded = new Set(); // guest ids open for editing
@@ -119,6 +121,7 @@ function applyRoute() {
   }
   scrollMemory[viewKey(view)] = scrollY;
   if (view.name === "stay" && viewKey(next) !== viewKey(view)) dropIfEmpty(view.id);
+  if (next.name === "stay" && viewKey(next) !== viewKey(view)) foldCompleteSections(findStay(next.id));
   view = next;
   render();
 }
@@ -217,6 +220,34 @@ const currentFp = (stay) => {
   const p = findProperty(stay.propertyId);
   return p ? stayFingerprint(stay, p) : "";
 };
+
+const DETAIL_CODES = ["chooseProperty", "noIdub", "dates", "datesInvalid", "datesOrder"];
+
+function sectionComplete(stay, section) {
+  if (section === "details") return !stayIssues(stay, findProperty(stay.propertyId), today()).some((i) => DETAIL_CODES.includes(i.code));
+  return stay.guests.length > 0 && stay.guests.every((g) => guestReady(stay, g));
+}
+
+const isSectionOpen = (stay, section) => sectionOpen.get(`${stay.id}:${section}`) ?? !sectionComplete(stay, section);
+
+function setSectionOpen(stay, section, open) {
+  sectionOpen.set(`${stay.id}:${section}`, open);
+}
+
+// Finished sections fold into a one-line summary when a stay is opened; they never fold while being edited.
+function foldCompleteSections(stay) {
+  if (!stay) return;
+  for (const section of ["details", "guests"]) setSectionOpen(stay, section, !sectionComplete(stay, section));
+}
+
+// Opens the section that contains an element before jumping to it.
+function revealSection(stay, el) {
+  const section = el?.closest?.("#sec-details") ? "details" : el?.closest?.("#sec-guests") ? "guests" : null;
+  if (!stay || !section || isSectionOpen(stay, section)) return false;
+  setSectionOpen(stay, section, true);
+  render();
+  return true;
+}
 
 const STAGE_CLASS = { draft: "muted", review: "warn", ready: "info", exported: "info", changed: "warn", reported: "ok", changedAfterReport: "bad" };
 
@@ -492,7 +523,7 @@ function renderSheet() {
     layer.innerHTML = "";
     return;
   }
-  const renderers = { report: renderReportSheet, lossy: renderLossySheet, restore: renderRestoreSheet, lang: renderLangSheet, apikey: renderKeySheet, country: renderCountrySheet, photo: renderPhotoSheet };
+  const renderers = { preview: renderPreviewSheet, report: renderReportSheet, lossy: renderLossySheet, restore: renderRestoreSheet, lang: renderLangSheet, apikey: renderKeySheet, country: renderCountrySheet, photo: renderPhotoSheet };
   layer.innerHTML = `<div class="sheet-backdrop" data-action="close-sheet"></div>
     <div class="sheet sheet-${sheet.kind}" role="dialog" aria-modal="true" aria-labelledby="sheet-title">${renderers[sheet.kind]()}</div>`;
   if (opening) layer.querySelector(".sheet input, .sheet button")?.focus({ preventScroll: true });
@@ -513,6 +544,44 @@ function renderReportSheet() {
     <div class="sheet-actions">
       <button data-action="close-sheet">${t("sheet.cancel")}</button>
       <button class="primary" data-action="confirm-report" ${sheet.checked ? "" : "disabled"}>${ICON.check}${t("sheet.confirm")}</button>
+    </div>`;
+}
+
+// Shows exactly what the downloaded file would contain, as Ubyport will read it.
+function renderPreviewSheet() {
+  const stay = findStay(sheet.stayId);
+  const property = findProperty(stay.propertyId);
+  if (!property) return `<h2 id="sheet-title">${t("preview.title")}</h2><p class="sheet-warn">${t("s.chooseProperty")}</p>
+    <div class="sheet-actions"><button class="primary" data-action="close-sheet">${t("photo.close")}</button></div>`;
+  const now = new Date();
+  const sent = new TextDecoder("windows-1250").decode(encodeCp1250(buildUnl(property, stay.guests.map((guest) => ({ stay, guest })), now)).bytes);
+  const lines = sent.split("\r\n");
+  const complete = !stayIssues(stay, property, today()).length;
+  const value = (v) => (v ? esc(v) : `<span class="muted">—</span>`);
+  const rows = (pairs) => `<dl class="kv">${pairs.map(([label, v]) => `<dt>${label}</dt><dd>${value(v)}</dd>`).join("")}</dl>`;
+  const head = lines[0].split("|");
+  const headerCard = `<div class="preview-card"><p class="preview-head">${aptDot(property)}${t("preview.header")}</p>${rows([
+    [t("p.idub"), head[2]], [t("p.abbr"), head[3]], [t("p.name"), head[4]], [t("p.contact"), head[5]], [t("p.district"), head[6]],
+    [t("p.municipality"), head[7]], [t("p.municipalityPart"), head[8]], [t("p.street"), head[9]], [t("p.houseNumber"), head[10]],
+    [t("p.orientationNumber"), head[11]], [t("p.zip"), head[12]], [t("preview.created"), head[13]],
+  ])}</div>`;
+  const guestCards = lines.slice(1).map((line, i) => {
+    const f = line.split("|");
+    return `<div class="preview-card"><p class="preview-head">${avatar(stay.guests[i])}${value([f[4], f[3]].filter(Boolean).join(" "))}</p>${rows([
+      [t("stay.arrival"), f[1]], [t("stay.departure"), f[2]], [t("f.surname"), f[3]], [t("f.givenNames"), f[4]], [t("f.birthDate"), f[6]],
+      [t("f.nationality"), f[9] && `${f[9]} · ${countryName(f[9])}`], [t("f.address"), f[10]], [t("f.documentNumber"), f[11]], [t("f.visa"), f[12]],
+      [t("f.purpose"), f[13] && `${f[13]} · ${t("purpose." + f[13])}`], [t("f.note"), f[15]],
+    ])}</div>`;
+  }).join("");
+  const raw = `<pre class="unl-raw" tabindex="0">${lines.map((l) => esc(l).replace(/\|/g, '<span class="sep">|</span>')).join("\n")}</pre>`;
+  return `<h2 id="sheet-title">${t("preview.title")}</h2>
+    <p class="muted small">${esc(unlFileName(property, now))} · Windows-1250</p>
+    ${complete ? "" : `<p class="sheet-warn">${t("preview.incomplete")}</p>`}
+    <div class="segmented two-way">${["readable", "raw"].map((m) => `<button class="${sheet.mode === m ? "on" : ""}" data-action="preview-mode" data-mode="${m}" aria-pressed="${sheet.mode === m}">${t("preview." + m)}</button>`).join("")}</div>
+    <div class="preview-body" tabindex="0" role="region" aria-label="${t("preview." + sheet.mode)}">${sheet.mode === "raw" ? raw : guestCards + headerCard}</div>
+    <div class="sheet-actions preview-actions">
+      <button data-action="close-sheet">${t("photo.close")}</button>
+      ${complete ? `<button class="primary" data-action="export">${ICON.download}${t("report.download")}</button>` : ""}
     </div>`;
 }
 
@@ -671,8 +740,9 @@ function renderStay(stay) {
     <button class="back" data-action="nav" data-view="stays">${ICON.back}${t("nav.stays")}</button>
     <div data-status="stepper">${renderStepper(stay)}</div>
 
-    <section class="card" id="sec-details">
-      <h2 tabindex="-1"><span class="num">1</span>${t("stay.details")}</h2>
+    <section class="card section ${isSectionOpen(stay, "details") ? "" : "collapsed"}" id="sec-details">
+      <h2 tabindex="-1" data-status="head-details">${renderSectionHead(stay, "details")}</h2>
+      <div class="section-body" id="secbody-details" ${isSectionOpen(stay, "details") ? "" : "hidden"}>
       <label for="in-property">${t("stay.apartment")}</label>
       <select id="in-property" data-stay-field="propertyId">
         <option value="">${t("stay.choose")}</option>
@@ -688,10 +758,12 @@ function renderStay(stay) {
       <div data-status="deadline">${renderDeadline(stay)}</div>
       <label for="in-label">${t("stay.note")}</label>
       <input id="in-label" data-stay-field="label" value="${esc(stay.label)}" placeholder="${esc(t("stay.notePlaceholder"))}">
+      </div>
     </section>
 
-    <section class="card" id="sec-guests">
-      <h2 tabindex="-1"><span class="num">2</span>${t("stay.guests")}</h2>
+    <section class="card section ${isSectionOpen(stay, "guests") ? "" : "collapsed"}" id="sec-guests">
+      <h2 tabindex="-1" data-status="head-guests">${renderSectionHead(stay, "guests")}</h2>
+      <div class="section-body" id="secbody-guests" ${isSectionOpen(stay, "guests") ? "" : "hidden"}>
       <div class="ask">
         <span class="muted small">${ICON.chat}${t("stay.askGuest")}</span>
         <span class="chips">${Object.entries(LANGS).map(([code, label]) => `<button class="chip" data-action="copy-guest-message" data-lang="${code}">${label}</button>`).join("")}</span>
@@ -699,6 +771,7 @@ function renderStay(stay) {
       <div data-status="photo-area">${renderPhotoArea(stay)}</div>
       <div data-status="guest-summary">${renderGuestSummary(stay)}</div>
       <div class="guest-list">${stay.guests.map((g, i) => renderGuest(stay, g, i)).join("")}</div>
+      </div>
     </section>
 
     <section class="card" id="sec-report">
@@ -707,6 +780,25 @@ function renderStay(stay) {
       <details><summary>${t("report.manual")}</summary>${renderManualCopy(stay)}</details>
     </section>
     <button class="danger" data-action="delete-stay">${t("stay.delete")}</button>`;
+}
+
+function renderSectionHead(stay, section) {
+  const open = isSectionOpen(stay, section);
+  const done = sectionComplete(stay, section);
+  const number = section === "details" ? 1 : 2;
+  let summary = "";
+  if (section === "details") {
+    const p = findProperty(stay.propertyId);
+    const nights = stay.arrival && stay.departure ? daysBetween(stay.arrival, stay.departure) : 0;
+    summary = `${aptDot(p)}${esc(p?.label || p?.name || "")} · ${niceDate(stay.arrival)} → ${niceDate(stay.departure)}${nights > 0 ? ` · ${t("stay.nights", { n: nights })}` : ""}${stay.label ? ` · ${esc(stay.label)}` : ""}`;
+  } else {
+    summary = `<span class="avatars">${stay.guests.slice(0, 4).map(avatar).join("")}</span>${t("hero.guests", { n: stay.guests.length })}${done ? ` · ${t("guests.allReviewed")}` : ""}`;
+  }
+  return `<button class="section-toggle" data-action="toggle-section" data-section="${section}" aria-expanded="${open}" aria-controls="secbody-${section}">
+    <span class="num ${done ? "done" : ""}">${done ? ICON.check : number}</span>
+    <span class="section-name"><span class="section-label">${t(section === "details" ? "stay.details" : "stay.guests")}</span>
+      <span class="section-summary">${summary}</span></span>
+    <span class="chev">${ICON.chevron}</span></button>`;
 }
 
 function passportArt() {
@@ -838,7 +930,10 @@ function renderReport(stay) {
   return `${banner}${status}${apartment}
     <div class="rsteps">
       <div class="rstep"><span class="rnum">1</span><div>
-        <button class="primary" data-action="export">${ICON.download}${t(stay.export && !fresh ? "report.downloadAgain" : "report.download")}</button>
+        <div class="row-buttons file-actions">
+          <button class="primary" data-action="export">${ICON.download}${t(stay.export && !fresh ? "report.downloadAgain" : "report.download")}</button>
+          <button class="preview-btn" data-action="preview-file" aria-label="${t("report.preview")}" title="${t("report.preview")}">${ICON.eye}<span class="btn-label">${t("report.preview")}</span></button>
+        </div>
         ${stay.export ? `<div class="muted small">${t("report.downloaded", { date: esc(niceDateTime(stay.export.at)) })}</div>` : ""}
       </div></div>
       <div class="rstep"><span class="rnum">2</span><div>${t("report.upload", { url: UBYPORT_URL })}</div></div>
@@ -1083,6 +1178,8 @@ function refreshStatus(onlyGuest) {
     setHtml(document.querySelector('[data-status="deadline"]'), renderDeadline(stay));
     setHtml(document.querySelector('[data-status="stepper"]'), renderStepper(stay));
     setHtml(document.querySelector('[data-status="guest-summary"]'), renderGuestSummary(stay));
+    setHtml(document.querySelector('[data-status="head-details"]'), renderSectionHead(stay, "details"));
+    setHtml(document.querySelector('[data-status="head-guests"]'), renderSectionHead(stay, "guests"));
     setHtml(document.getElementById("hero-text"), renderHeroText());
     stay.guests.forEach((g, i) => (!onlyGuest || g.id === onlyGuest) && refreshGuest(stay, g, i));
   }
@@ -1127,6 +1224,8 @@ function exportFiles(stays, { force = false } = {}) {
 // Export attempt with something missing: show every problem and go to the list.
 function showProblems(stay) {
   showAll.add(stay.id);
+  sheet = null;
+  for (const section of ["details", "guests"]) if (!sectionComplete(stay, section)) setSectionOpen(stay, section, true);
   const firstBad = stay.guests.find((g) => !guestReady(stay, g));
   if (firstBad) expanded.add(firstBad.id);
   render();
@@ -1157,6 +1256,11 @@ function replaceState(next) {
 }
 
 function pickPhotos() {
+  const stay = view.name === "stay" ? findStay(view.id) : null;
+  if (stay && !isSectionOpen(stay, "guests")) {
+    setSectionOpen(stay, "guests", true);
+    render();
+  }
   if (!state.settings.apiKey) return openSheet({ kind: "apikey", key: "", files: null });
   document.getElementById("photo-input").click();
 }
@@ -1246,6 +1350,7 @@ function changeLanguage(code) {
 
 function openGuest(stay, id, { focus = true } = {}) {
   expanded.add(id);
+  setSectionOpen(stay, "guests", true);
   render();
   const card = document.querySelector(`[data-guest-card="${id}"]`);
   if (!card) return;
@@ -1288,8 +1393,26 @@ document.addEventListener("click", (e) => {
     case "open-stay":
       go("stay", el.dataset.id);
       return;
-    case "jump-section":
-      focusField(document.getElementById(el.dataset.target)?.querySelector("h2"));
+    case "jump-section": {
+      const section = document.getElementById(el.dataset.target);
+      const name = { "sec-details": "details", "sec-guests": "guests" }[el.dataset.target];
+      if (name && !isSectionOpen(stay, name)) {
+        setSectionOpen(stay, name, true);
+        render();
+      }
+      focusField(document.getElementById(el.dataset.target)?.querySelector("h2") || section);
+      return;
+    }
+    case "toggle-section":
+      setSectionOpen(stay, el.dataset.section, !isSectionOpen(stay, el.dataset.section));
+      break;
+    case "preview-file":
+      openSheet({ kind: "preview", stayId: stay.id, mode: "readable" });
+      return;
+    case "preview-mode":
+      sheet.mode = el.dataset.mode;
+      shownSheet = null;
+      renderSheet();
       return;
     case "set-nights":
       if (!stay.arrival) return focusField(document.getElementById("in-arrival"));
@@ -1357,6 +1480,7 @@ document.addEventListener("click", (e) => {
       expanded.delete(guest.id);
       const next = stay.guests.find((g) => !guestReady(stay, g));
       if (next) return openGuest(stay, next.id, { focus: false });
+      setSectionOpen(stay, "guests", false);
       render();
       focusField(document.getElementById("report-title"));
       return;
@@ -1411,6 +1535,7 @@ document.addEventListener("click", (e) => {
         return openGuest(stay, el.dataset.guest);
       }
       if (el.dataset.target === "settings") return go("settings");
+      revealSection(stay, document.getElementById(el.dataset.target));
       const target = document.getElementById(el.dataset.target);
       focusField(target?.tagName === "SECTION" ? target.querySelector("h2") : target);
       return;
@@ -1670,6 +1795,7 @@ if (view.name === "stay" && !findStay(view.id)) {
   view = { name: "stays" };
 }
 
+if (view.name === "stay") foldCompleteSections(findStay(view.id));
 setLang(state.settings.lang || DEFAULT_LANG);
 applyTheme(state.settings.theme);
 mountShell();

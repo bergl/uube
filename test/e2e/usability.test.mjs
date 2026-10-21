@@ -132,9 +132,14 @@ test("no serious accessibility problems in any theme", () =>
         s.settings.theme = th;
         localStorage.setItem("ubyport-helper-v1", JSON.stringify(s));
       }, theme);
-      for (const hash of ["#/", stayHash, "#/settings"]) {
-        await page.goto(new URL(hash, page.url()).href);
-        await page.reload();
+      for (const hash of ["#/", stayHash, "preview", "#/settings"]) {
+        if (hash === "preview") {
+          await page.click('[data-action="preview-file"]');
+          await page.locator(".preview-card").first().waitFor();
+        } else {
+          await page.goto(new URL(hash, page.url()).href);
+          await page.reload();
+        }
         if (hash === stayHash) await page.locator(".guest-row").first().click();
         await page.addScriptTag({ content: AXE });
         const found = await page.evaluate(async () => {

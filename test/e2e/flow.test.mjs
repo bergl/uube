@@ -49,12 +49,29 @@ test("a stay goes from photos to a confirmed report", async () => {
   assert.equal(await openCard(page).count(), 0);
   assert.match(await page.locator('[data-status="guest-summary"]').innerText(), /Ready: 2 of 2/);
 
+  // The file can be previewed before downloading, readable or raw.
+  await page.click('[data-action="preview-file"]');
+  const preview = page.locator(".sheet");
+  assert.equal(await preview.locator(".preview-card").count(), 3, "header plus one card per guest");
+  assert.match(await preview.locator(".preview-card").first().innerText(), /Hans Peter Müller[\s\S]*DEU · Germany[\s\S]*12 Baker Street, London/);
+  await preview.locator('[data-action="preview-mode"][data-mode="raw"]').click();
+  assert.match(await preview.locator(".unl-raw").innerText(), /^A\|2\|123456789\|[\s\S]*\nU\|.*\|Müller\|Hans Peter\|/);
+  const fromPreview = await downloadText(page, () => preview.locator('[data-action="export"]').click(), "windows-1250");
+  assert.match(fromPreview.name, /\.unl$/);
+  assert.equal(await page.locator(".sheet").count(), 0, "downloading closes the preview");
+
   const first = await downloadText(page, () => page.click('[data-action="export"]'), "windows-1250");
   assert.match(first.name, /^123456789_\d{12}\.unl$/);
   const lines = first.text.split("\r\n");
   assert.equal(lines.length, 3);
   assert.match(lines[0], /^A\|2\|123456789\|\|Jana Nováková\|/);
   assert.match(lines[1], /^U\|\d\d\.\d\d\.\d{4}\|\d\d\.\d\d\.\d{4}\|Müller\|Hans Peter\|\|14\.03\.1985\|\|\|DEU\|12 Baker Street, London\|C01X00T47\|\|10\|\|$/);
+
+  // Finished sections fold away and open again on a tap.
+  assert.equal(await page.locator("#sec-guests.collapsed").count(), 1, "the guests section folds once everyone is reviewed");
+  assert.match(await page.locator('#sec-guests .section-summary').innerText(), /2 guests · all reviewed/);
+  await page.click('#sec-guests [data-action="toggle-section"]');
+  assert.equal(await page.locator("#sec-guests .section-toggle").getAttribute("aria-expanded"), "true");
 
   // Changing reportable data after the export is noticed and needs a fresh review.
   await page.locator(".guest-row").nth(1).click();
@@ -79,6 +96,8 @@ test("a stay goes from photos to a confirmed report", async () => {
 test("editing a reported stay reopens it and re-checks the passport code", async () => {
   const { page } = app;
   await page.locator(".history .stay-card").click();
+  assert.equal(await page.locator(".section.collapsed").count(), 2, "a finished stay opens with both sections folded");
+  await page.click('#sec-guests [data-action="toggle-section"]');
   await page.locator(".guest-row").first().click();
   await openCard(page).locator('[data-field="documentNumber"]').fill("C01X00T48");
   await page.locator(".guest-row .pill.warn", { hasText: "Differs from passport code" }).waitFor();
