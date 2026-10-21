@@ -125,6 +125,13 @@
   .scene .deco-windows rect:nth-child(3n) { animation-delay: -2s; } .scene .deco-windows rect:nth-child(4n) { animation-delay: -4.5s; }
   .scene .deco-petals { display: var(--show-petals); fill: var(--accent-2); opacity: .8; }
   .scene .deco-petals ellipse { animation: petal 10s linear infinite; transform-box: fill-box; }
+  /* Wider than a phone: the header becomes a banner as wide as the content column,
+     and the skyline keeps its proportions instead of being cropped into giant blocks. */
+  @media (min-width: 700px) {
+    body { display: flow-root; } /* keeps the banner's top margin from exposing the root background above it */
+    .hero { max-width: 608px; height: 250px; margin: 16px auto 0; border-radius: 28px; box-shadow: 0 18px 40px -22px rgba(0,0,0,.35); }
+    .hero > .scene { height: 182px; }
+  }
   .hero-text { text-shadow: var(--hero-shadow); position: absolute; left: 0; right: 0; top: calc(18px + env(safe-area-inset-top)); padding: 0 20px; max-width: 640px; margin: 0 auto; color: var(--hero-text); }
   .hero-text h1 { margin: 0; font-size: 1.75rem; font-weight: 800; line-height: 1.15; padding-right: 110px; }
   .hero-text p { margin: 6px 0 0; font-weight: 700; font-size: .92rem; }
