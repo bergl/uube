@@ -41,14 +41,16 @@ export const EXTRACTION = {
 
 export const PNG_1PX = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 
-export async function openApp({ viewport = { width: 390, height: 844 }, extraction = EXTRACTION } = {}) {
+export async function openApp({ viewport = { width: 390, height: 844 }, extraction = EXTRACTION, delayMs = 0, colorScheme = "light", settings = {} } = {}) {
   const server = await serveDist();
   const browser = await chromium.launch();
-  const context = await browser.newContext({ viewport, acceptDownloads: true, locale: "en-US" });
+  const context = await browser.newContext({ viewport, acceptDownloads: true, locale: "en-US", colorScheme });
   const errors = [];
   const requests = [];
   await context.route("https://api.anthropic.com/**", async (route) => {
     requests.push(JSON.parse(route.request().postData()));
+    if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+    // The page may have cancelled the request in the meantime.
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -57,13 +59,13 @@ export async function openApp({ viewport = { width: 390, height: 844 }, extracti
         id: "msg_test", type: "message", role: "assistant", model: "claude-opus-5-5", stop_reason: "end_turn", stop_sequence: null,
         content: [{ type: "text", text: JSON.stringify(extraction) }], usage: { input_tokens: 1, output_tokens: 1 },
       }),
-    });
+    }).catch(() => {});
   });
   const page = await context.newPage();
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
   await page.goto(server.url);
-  await page.evaluate(() => localStorage.setItem("ubyport-helper-v1", JSON.stringify({ version: 2, settings: { lang: "en" }, properties: [], stays: [] })));
+  await page.evaluate((s) => localStorage.setItem("ubyport-helper-v1", JSON.stringify({ version: 2, settings: { lang: "en", ...s }, properties: [], stays: [] })), settings);
   await page.reload();
   return {
     page, context, errors, requests, url: server.url,
@@ -81,3 +83,21 @@ export async function downloadText(page, click, encoding = "utf-8") {
   for await (const c of stream) chunks.push(c);
   return { name: download.suggestedFilename(), text: new TextDecoder(encoding).decode(Buffer.concat(chunks)) };
 }
+
+export async function addApartment(page, { apiKey = "sk-ant-test" } = {}) {
+  await page.click('.tab[data-view="settings"]');
+  await page.click('[data-action="add-property"]');
+  const f = (field, value) => page.fill(`[data-property][data-field="${field}"]`, value);
+  await f("label", "Vinohrady 2+kk");
+  await f("idub", "123456789");
+  await f("name", "Jana Nováková");
+  await f("street", "Mánesova");
+  await f("houseNumber", "1234");
+  await f("zip", "12000");
+  if (apiKey) await page.fill('[data-setting="apiKey"]', apiKey);
+}
+
+export const photoFiles = (n = 2) => Array.from({ length: n }, (_, i) => ({ name: `p${i}.png`, mimeType: "image/png", buffer: PNG_1PX }));
+
+// Only open guest cards show their fields.
+export const openCard = (page) => page.locator(".guest.open");

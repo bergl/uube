@@ -11,6 +11,8 @@ import { guestFingerprint, guestIssues, isReviewed, mrzState, propertyIssues, st
 
 const UBYPORT_URL = "https://ubyport.policie.cz/";
 const MODELS = { "claude-opus-5-5": "model.opus", "claude-sonnet-5-5": "model.sonnet", "claude-haiku-5-5": "model.haiku" };
+const LANG_NAMES = { en: "English", cs: "Čeština", ru: "Русский" };
+const COMMON_COUNTRIES = ["DEU", "GBR", "USA", "POL", "SVK", "UKR", "FRA", "ITA", "ESP", "NLD", "AUT", "ISR", "KOR", "CHN", "CAN", "AUS"];
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const DAY = 86400000;
 
@@ -25,13 +27,19 @@ const ICON = {
   chat: '<svg viewBox="0 0 24 24"><path d="M4 18.5V6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H8.5z"/></svg>',
   back: '<svg viewBox="0 0 24 24"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg>',
   shield: '<svg viewBox="0 0 24 24"><path d="M12 3 5 6v5.5c0 4.2 2.9 7.9 7 9.5 4.1-1.6 7-5.3 7-9.5V6z"/></svg>',
+  camera: '<svg viewBox="0 0 24 24"><path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.8l1.4-2h4.6l1.4 2h1.8A2.5 2.5 0 0 1 20 8.5v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/><circle cx="12" cy="12.5" r="3.4"/></svg>',
+  pen: '<svg viewBox="0 0 24 24"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>',
+  rotate: '<svg viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M19 4v4h-4"/></svg>',
+  close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24"><path d="m9 5.5 6.5 6.5L9 18.5"/></svg>',
+  lock: '<svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>',
 };
 
 // ---------------------------------------------------------------- state
 
-const emptyProperty = () => ({
+const emptyProperty = (hue) => ({
   id: uid(), label: "", idub: "", abbr: "", name: "", contact: "", district: "Praha",
-  municipality: "Praha", municipalityPart: "", street: "", houseNumber: "", orientationNumber: "", zip: "",
+  municipality: "Praha", municipalityPart: "", street: "", houseNumber: "", orientationNumber: "", zip: "", hue,
 });
 
 const emptyGuest = () => ({
@@ -41,18 +49,26 @@ const emptyGuest = () => ({
 });
 
 let state = load();
-let view = { name: "stays" };
-let busy = null; // { stayId }
+let view = parseRoute();
 let flash = null; // { kind, text, action?: { label, run } }
 let sheet = null; // in-app dialog, see renderSheet()
+let tray = null; // photos picked but not sent yet: { stayId, items: [{ id, file, url, rotation }] }
+let reading = null; // photos being read: { stayId, phase, i, n, batch, batches, sentAt, controller }
 let lastViewKey = null;
 let shownFlash = null;
 let shownSheet = null;
 let toastTimer = null;
-let scanTimer = null;
+let progressTimer = null;
 let saveStatus = "saved";
 let storageMode = "unsupported";
+let pointerDown = false;
+let refreshPending = false;
 const freshGuests = new Set();
+const photos = new Map(); // guest id → [{ url, rotation }], kept in memory only
+const expanded = new Set(); // guest ids open for editing
+const touched = new Set(); // "guestId:field" — errors show once a field has been visited
+const showAll = new Set(); // stay or guest ids whose errors are all shown (after an export or review attempt)
+const scrollMemory = {};
 
 const saver = createSaver(() => state, (status, err) => {
   saveStatus = status;
@@ -75,6 +91,44 @@ function noteChange() {
   state.settings.changesSinceBackup = (state.settings.changesSinceBackup || 0) + 1;
 }
 
+// ---------------------------------------------------------------- routing
+
+function parseRoute() {
+  const [name, id] = location.hash.replace(/^#\/?/, "").split("/");
+  if (name === "stay" && id) return { name: "stay", id };
+  if (name === "settings" || name === "help") return { name };
+  return { name: "stays" };
+}
+
+const viewKey = (v) => v.name + (v.id || "");
+
+// In-app navigation updates the view right away; Back and Forward arrive as popstate.
+function go(name, id) {
+  const hash = name === "stays" ? "#/" : `#/${name}${id ? "/" + id : ""}`;
+  if (location.hash !== hash) history.pushState(null, "", hash);
+  applyRoute();
+}
+
+function applyRoute() {
+  let next = parseRoute();
+  if (next.name === "stay" && !findStay(next.id)) {
+    history.replaceState(null, "", "#/");
+    next = { name: "stays" };
+  }
+  scrollMemory[viewKey(view)] = scrollY;
+  if (view.name === "stay" && viewKey(next) !== viewKey(view)) dropIfEmpty(view.id);
+  view = next;
+  render();
+}
+
+// A stay opened with + and left untouched isn't kept.
+function dropIfEmpty(id) {
+  const s = findStay(id);
+  if (!s || s.guests.length || s.label || s.departure || s.export || s.report || (tray?.stayId === id) || (reading?.stayId === id)) return;
+  state.stays = state.stays.filter((x) => x !== s);
+  save();
+}
+
 // ---------------------------------------------------------------- helpers
 
 function esc(v) {
@@ -84,6 +138,12 @@ function esc(v) {
 function today() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function addDays(iso, n) {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
 }
 
 function daysBetween(fromIso, toIso) {
@@ -101,8 +161,10 @@ function guestName(g) {
   return [g.givenNames, g.surname].filter(Boolean).join(" ") || t("guest.unnamed");
 }
 
-function countryName(code) {
-  return COUNTRY_INFO[code]?.[getLang()] || COUNTRIES[code] || code;
+const firstName = (g) => (g.givenNames || "").split(" ")[0] || g.surname || t("guest.unnamed");
+
+function countryName(code, lang = getLang()) {
+  return COUNTRY_INFO[code]?.[lang] || COUNTRIES[code] || code;
 }
 
 function flag(code) {
@@ -118,9 +180,16 @@ function avatar(g) {
   return `<span class="avatar" style="--h:${hue}" aria-hidden="true">${esc(initials)}</span>`;
 }
 
+const propertyHue = (p) => (Number.isFinite(p?.hue) ? p.hue : (state.properties.indexOf(p) * 67 + 15) % 360);
+const aptDot = (p) => (p ? `<span class="apt-dot" style="--h:${propertyHue(p)}" aria-hidden="true"></span>` : "");
+
 function showFlash(kind, text, action) {
   flash = { kind, text, action };
   render();
+}
+
+function undoable(text, undo) {
+  showFlash("ok", text, { label: t("toast.undo"), run: undo });
 }
 
 function greeting() {
@@ -130,13 +199,15 @@ function greeting() {
 
 const FIELD_LABEL = {
   surname: "f.surname", givenNames: "f.givenNames", birthDate: "f.birthDate", nationality: "f.nationality",
-  documentNumber: "f.documentNumber", address: "f.address", note: "f.note",
+  documentNumber: "f.documentNumber", visa: "f.visa", address: "f.address", purpose: "f.purpose", note: "f.note",
 };
+const GUEST_INPUTS = ["surname", "givenNames", "birthDate", "nationality", "documentNumber", "visa", "address", "purpose", "note"];
 
-function issueText(issue) {
-  const text = esc(t("v." + issue.code, issue.params || {}));
-  return issue.field && FIELD_LABEL[issue.field] && issue.level === "warn" ? `<b>${t(FIELD_LABEL[issue.field])}:</b> ${text}` : text;
-}
+const issuesOf = (stay, g) => guestIssues(g, stay, today());
+const hasErrors = (stay, g) => issuesOf(stay, g).some((i) => i.level === "error");
+const guestReady = (stay, g) => !hasErrors(stay, g) && isReviewed(g);
+const errorsVisible = (stay, g, field) => showAll.has(stay.id) || showAll.has(g.id) || touched.has(`${g.id}:${field}`);
+const isBlank = (g) => !g.surname && !g.givenNames && !g.documentNumber && !g.birthDate;
 
 const stageOf = (stay) => stayStage(stay, findProperty(stay.propertyId), today());
 const isOpen = (stay) => stageOf(stay) !== "reported";
@@ -205,6 +276,13 @@ function confetti() {
   setTimeout(() => layer.remove(), 2200);
 }
 
+// Moves focus to a field and keeps it clear of the floating tab bar.
+function focusField(el) {
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  el.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+}
+
 // ---------------------------------------------------------------- layout
 
 function mountShell() {
@@ -212,7 +290,7 @@ function mountShell() {
     <header class="hero">
       ${skylineSvg()}
       <div class="hero-tools">
-        <button class="hero-btn" data-action="cycle-lang" aria-label="${esc(t("nav.language"))}">${ICON.globe}<span id="lang-label"></span></button>
+        <button class="hero-btn" data-action="open-lang" aria-label="${esc(t("nav.language"))}">${ICON.globe}<span id="lang-label"></span></button>
         <button class="hero-btn" data-action="nav" data-view="help" aria-label="${esc(t("nav.help"))}">${ICON.help}</button>
       </div>
       <div class="hero-text" id="hero-text"></div>
@@ -220,22 +298,34 @@ function mountShell() {
     <div id="toast-layer" aria-live="polite"></div>
     <main id="view"></main>
     <nav class="tabbar" id="tabbar"></nav>
-    <div id="sheet-layer"></div>`;
+    <div id="sheet-layer"></div>
+    <input type="file" id="photo-input" accept="image/*" multiple data-action="photos" class="visually-hidden" tabindex="-1" aria-hidden="true">
+    <input type="file" id="restore-input" accept="application/json,.json" data-action="restore" class="visually-hidden" tabindex="-1" aria-hidden="true">`;
+  watchHero();
+}
+
+// Pauses the skyline's animations while the header is scrolled out of view.
+function watchHero() {
+  const hero = document.querySelector(".hero");
+  if (!("IntersectionObserver" in window)) return;
+  new IntersectionObserver(([entry]) => hero.classList.toggle("paused", !entry.isIntersecting)).observe(hero);
 }
 
 function render() {
-  const key = view.name + (view.id || "");
+  const key = viewKey(view);
   const main = document.getElementById("view");
   const heroText = document.getElementById("hero-text");
   main.innerHTML =
     view.name === "stay" ? renderStay(findStay(view.id)) : view.name === "settings" ? renderSettings() : view.name === "help" ? renderHelp() : renderStays();
+  document.querySelector(".hero").classList.toggle("compact", view.name !== "stays");
   heroText.innerHTML = renderHeroText();
   document.getElementById("lang-label").textContent = LANGS[getLang()];
   document.getElementById("tabbar").innerHTML = renderTabbar();
 
   if (key !== lastViewKey) {
+    const firstRender = lastViewKey === null;
     lastViewKey = key;
-    window.scrollTo({ top: 0 });
+    window.scrollTo(0, scrollMemory[key] || 0);
     for (const el of [main, heroText]) {
       el.classList.remove("enter");
       void el.offsetWidth;
@@ -243,11 +333,12 @@ function render() {
     }
     clearTimeout(render.enterTimer);
     render.enterTimer = setTimeout(() => [main, heroText].forEach((el) => el.classList.remove("enter")), 900);
+    if (!firstRender) heroText.querySelector("h1")?.focus({ preventScroll: true });
   }
   renderToast();
   renderSheet();
   freshGuests.clear();
-  syncScanner();
+  syncProgressTimer();
 }
 
 function renderSaveStatus() {
@@ -260,28 +351,28 @@ function renderHeroText() {
     const stay = findStay(view.id);
     if (!stay) return "";
     const p = findProperty(stay.propertyId);
-    return `<h1>${esc(p?.label || p?.name || t("hero.newStay"))}</h1>
+    return `<h1 tabindex="-1">${esc(p?.label || p?.name || t("hero.newStay"))}</h1>
       <p>${niceDate(stay.arrival)} → ${niceDate(stay.departure)} · ${t("hero.guests", { n: stay.guests.length })}</p>${saved}`;
   }
-  if (view.name === "settings") return `<h1>${t("settings.title")}</h1><p>${t("settings.subtitle")}</p>${saved}`;
-  if (view.name === "help") return `<h1>${t("help.title")}</h1><p>${t("help.subtitle")}</p>`;
+  if (view.name === "settings") return `<h1 tabindex="-1">${t("settings.title")}</h1><p>${t("settings.subtitle")}</p>${saved}`;
+  if (view.name === "help") return `<h1 tabindex="-1">${t("help.title")}</h1><p>${t("help.subtitle")}</p>`;
   const open = state.stays.filter(isOpen);
   let line;
-  if (!state.properties.length || !state.settings.apiKey) line = t("hero.setup");
+  if (!state.properties.length) line = t("hero.setup");
   else if (!open.length) line = t("hero.allDone");
   else {
     const next = open.map((s) => (s.arrival ? reportDeadline(s.arrival) : null)).filter(Boolean).sort()[0];
     line = t("hero.toReport", { n: open.length }) + (next ? ` · ${t("hero.nextDue", { date: niceDate(next) })}` : "");
   }
-  return `<h1>${greeting()} <span class="wave">👋</span></h1><p>${esc(line)}</p>`;
+  return `<h1 tabindex="-1">${greeting()} <span class="wave">👋</span></h1><p>${esc(line)}</p>`;
 }
 
 function renderTabbar() {
-  const on = (names) => (names.includes(view.name) ? "on" : "");
+  const current = (names) => (names.includes(view.name) ? 'class="tab on" aria-current="page"' : 'class="tab"');
   return `
-    <button class="tab ${on(["stays", "stay"])}" data-action="nav" data-view="stays">${ICON.home}<span>${t("nav.stays")}</span></button>
-    <button class="fab" data-action="new-stay" aria-label="${esc(t("nav.newStay"))}">${ICON.plus}</button>
-    <button class="tab ${on(["settings"])}" data-action="nav" data-view="settings">${ICON.cog}<span>${t("nav.settings")}</span></button>`;
+    <button ${current(["stays", "stay"])} data-action="nav" data-view="stays">${ICON.home}<span>${t("nav.stays")}</span></button>
+    <button class="fab-wrap" data-action="new-stay"><span class="fab">${ICON.plus}</span><span class="fab-label">${t("nav.newStay")}</span></button>
+    <button ${current(["settings"])} data-action="nav" data-view="settings">${ICON.cog}<span>${t("nav.settings")}</span></button>`;
 }
 
 function renderToast() {
@@ -310,50 +401,37 @@ function renderToast() {
   }
 }
 
-// Cycles the friendly progress messages while photos are being read.
-function syncScanner() {
-  if (!busy) {
-    clearInterval(scanTimer);
-    scanTimer = null;
-    return;
-  }
-  if (scanTimer) return;
-  let i = 1;
-  scanTimer = setInterval(() => {
-    const el = document.getElementById("scan-text");
-    if (!el) return;
-    i = Math.min(i + 1, 4);
-    el.classList.remove("swap");
-    void el.offsetWidth;
-    el.textContent = t(`scan.${i}`);
-    el.classList.add("swap");
-  }, 2600);
-}
-
 // ---------------------------------------------------------------- sheets (in-app dialogs)
 
 function openSheet(next) {
   sheet = next;
+  shownSheet = null;
   renderSheet();
 }
 
 function closeSheet() {
+  const was = sheet;
   sheet = null;
   renderSheet();
+  if (was?.kind === "country") {
+    touched.add(`${was.guestId}:nationality`);
+    refreshStatus();
+    document.getElementById(`in-${was.guestId}-nationality`)?.focus({ preventScroll: true });
+  }
 }
 
 function renderSheet() {
   const layer = document.getElementById("sheet-layer");
   if (sheet === shownSheet && layer.childElementCount === (sheet ? 2 : 0)) return;
-  const opening = !shownSheet && sheet;
+  const opening = !layer.childElementCount && sheet;
   shownSheet = sheet;
   if (!sheet) {
     layer.innerHTML = "";
     return;
   }
-  const body = sheet.kind === "report" ? renderReportSheet() : sheet.kind === "lossy" ? renderLossySheet() : renderRestoreSheet();
+  const renderers = { report: renderReportSheet, lossy: renderLossySheet, restore: renderRestoreSheet, lang: renderLangSheet, apikey: renderKeySheet, country: renderCountrySheet, photo: renderPhotoSheet };
   layer.innerHTML = `<div class="sheet-backdrop" data-action="close-sheet"></div>
-    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">${body}</div>`;
+    <div class="sheet sheet-${sheet.kind}" role="dialog" aria-modal="true" aria-labelledby="sheet-title">${renderers[sheet.kind]()}</div>`;
   if (opening) layer.querySelector(".sheet input, .sheet button")?.focus({ preventScroll: true });
 }
 
@@ -368,7 +446,7 @@ function renderReportSheet() {
     </fieldset>
     ${fileNote}
     <label class="check"><input type="checkbox" data-sheet-field="checked" ${sheet.checked ? "checked" : ""}>${t("sheet.check", { n: stay.guests.length })}</label>
-    <label>${t("sheet.ref")}<input data-sheet-field="ref" value="${esc(sheet.ref)}" autocomplete="off"></label>
+    <label for="sheet-ref">${t("sheet.ref")}</label><input id="sheet-ref" data-sheet-field="ref" value="${esc(sheet.ref)}" autocomplete="off">
     <div class="sheet-actions">
       <button data-action="close-sheet">${t("sheet.cancel")}</button>
       <button class="primary" data-action="confirm-report" ${sheet.checked ? "" : "disabled"}>${ICON.check}${t("sheet.confirm")}</button>
@@ -397,6 +475,54 @@ function renderRestoreSheet() {
     </div>`;
 }
 
+function renderLangSheet() {
+  return `<h2 id="sheet-title">${t("set.language")}</h2>
+    <div class="option-list">${Object.keys(LANGS)
+      .map((code) => `<button class="option ${getLang() === code ? "on" : ""}" data-action="set-lang" data-lang="${code}" aria-pressed="${getLang() === code}">
+        <span>${LANG_NAMES[code]}</span>${getLang() === code ? ICON.check : ""}</button>`)
+      .join("")}</div>`;
+}
+
+function renderKeySheet() {
+  return `<h2 id="sheet-title">${t("set.reading")}</h2>
+    <p class="muted">${t("key.text")}</p>
+    <label for="sheet-key">${t("set.apiKey")}</label>
+    <input id="sheet-key" type="password" data-sheet-field="key" value="${esc(sheet.key || "")}" placeholder="sk-ant-…" autocomplete="off">
+    <div class="sheet-actions">
+      <button data-action="key-manual">${t("key.manual")}</button>
+      <button class="primary" data-action="save-key">${ICON.camera}${t("key.save")}</button>
+    </div>`;
+}
+
+const fold = (s) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+
+function countryOptions(query) {
+  const button = (code) => `<button class="option" data-action="choose-country" data-code="${code}"><span>${flag(code)} ${esc(countryName(code))}</span><span class="muted small">${code}</span></button>`;
+  const q = fold(query.trim());
+  const lang = getLang();
+  const all = Object.keys(COUNTRIES).sort((a, b) => countryName(a).localeCompare(countryName(b), lang));
+  if (!q) {
+    return `<p class="option-head">${t("country.common")}</p>${COMMON_COUNTRIES.map(button).join("")}
+      <p class="option-head">${t("country.all")}</p>${all.map(button).join("")}`;
+  }
+  const matches = all.filter((code) => [code, countryName(code, "en"), countryName(code, "cs"), countryName(code, "ru")].some((n) => fold(n).includes(q)));
+  return matches.length ? matches.map(button).join("") : `<p class="muted">${t("country.none")}</p>`;
+}
+
+function renderCountrySheet() {
+  return `<h2 id="sheet-title">${t("f.nationality")}</h2>
+    <input type="search" data-sheet-field="query" value="${esc(sheet.query)}" placeholder="${esc(t("country.search"))}" aria-label="${esc(t("country.search"))}" autocomplete="off">
+    <div class="option-list scroll" data-status="country-list">${countryOptions(sheet.query)}</div>`;
+}
+
+function renderPhotoSheet() {
+  return `<h2 id="sheet-title" class="visually-hidden">${t("guest.photo", { n: sheet.k + 1 })}</h2>
+    <div class="viewer ${sheet.zoom ? "zoomed" : ""}">
+      <img src="${sheet.url}" style="--rot:${sheet.rotation * 90}deg" alt="${esc(t("guest.photo", { n: sheet.k + 1 }))}" data-action="toggle-zoom" title="${esc(t("photo.zoom"))}">
+    </div>
+    <div class="sheet-actions"><button class="primary" data-action="close-sheet">${t("photo.close")}</button></div>`;
+}
+
 // ---------------------------------------------------------------- views
 
 function backupDue() {
@@ -413,8 +539,6 @@ function backupLine() {
 }
 
 function renderStays() {
-  const needsProperty = !state.properties.length;
-  const needsKey = !state.settings.apiKey;
   const stays = [...state.stays].sort((a, b) => (a.arrival || "9").localeCompare(b.arrival || "9"));
   const open = stays.filter(isOpen);
   const done = stays.filter((s) => !isOpen(s)).reverse();
@@ -425,25 +549,24 @@ function renderStays() {
     const p = findProperty(s.propertyId);
     const bar = stage === "reported" ? "ok" : dl?.cls === "bad" ? "bad" : STAGE_CLASS[stage];
     return `<button class="stay-card s-${bar}" data-action="open-stay" data-id="${s.id}">
-      <span class="stay-top"><span class="stay-place">${esc(p?.label || p?.name || t("stay.noProperty"))}</span>
+      <span class="stay-top"><span class="stay-place">${aptDot(p)}${esc(p?.label || p?.name || t("stay.noProperty"))}</span>
         <span class="pills"><span class="pill ${STAGE_CLASS[stage]}">${t("stage." + stage)}</span>${dl ? `<span class="pill ${dl.cls}">${esc(dl.text)}</span>` : ""}</span></span>
-      <span class="stay-dates">${niceDate(s.arrival)} <span class="arrow">→</span> ${niceDate(s.departure)}${s.label ? ` · <span class="muted">${esc(s.label)}</span>` : ""}</span>
-      <span class="stay-bottom"><span class="avatars">${s.guests.slice(0, 5).map(avatar).join("")}</span>
-        <span class="muted small">${t("hero.guests", { n: s.guests.length })}</span><span class="chev">›</span></span>
+      <span class="stay-dates">${niceDate(s.arrival)} <span class="arrow">→</span> ${s.departure ? niceDate(s.departure) : `<span class="pill muted">${t("stay.addDeparture")}</span>`}${s.label ? ` · <span class="muted">${esc(s.label)}</span>` : ""}</span>
+      <span class="stay-bottom">${s.guests.length
+        ? `<span class="avatars">${s.guests.slice(0, 5).map(avatar).join("")}</span><span class="muted small">${t("hero.guests", { n: s.guests.length })}</span>`
+        : `<span class="pill muted">${t("stay.noGuestsYet")}</span>`}<span class="chev">${ICON.chevron}</span></span>
     </button>`;
   };
 
-  const onboarding =
-    needsProperty || needsKey
-      ? `<section class="card onboarding">
-          <h2>${t("onb.title")}</h2><p class="muted">${t("onb.text")}</p>
-          <ol class="checklist">
-            <li class="${needsProperty ? "" : "done"}"><button data-action="nav" data-view="settings"><span class="tick">${needsProperty ? "1" : ICON.check}</span>${t("onb.property")}</button></li>
-            <li class="${needsKey ? "" : "done"}"><button data-action="nav" data-view="settings"><span class="tick">${needsKey ? "2" : ICON.check}</span>${t("onb.key")}</button></li>
-            <li class="optional"><button data-action="nav" data-view="settings"><span class="tick">🎨</span>${t("onb.theme")}</button></li>
-          </ol>
-        </section>`
-      : "";
+  const onboarding = !state.properties.length
+    ? `<section class="card onboarding">
+        <h2>${t("onb.title")}</h2><p class="muted">${t("onb.text")}</p>
+        <ol class="checklist">
+          <li><button data-action="nav" data-view="settings"><span class="tick">1</span>${t("onb.property")}</button></li>
+          <li class="optional"><button data-action="nav" data-view="settings"><span class="tick">🎨</span>${t("onb.theme")}</button></li>
+        </ol>
+      </section>`
+    : "";
 
   const reminder = backupDue()
     ? `<section class="card reminder"><h2>${ICON.shield}${t("backup.reminderTitle")}</h2>
@@ -472,55 +595,51 @@ function renderStays() {
 function renderStepper(stay) {
   const done = stayProgress(stay);
   const current = done.indexOf(false);
-  const labels = [t("step.details"), t("step.guests"), t("step.file"), t("step.reported")];
-  return `<ol class="stepper">${labels
-    .map((l, i) => `<li class="${done[i] ? "done" : ""} ${current === i ? "current" : ""}"><span class="dot">${done[i] ? ICON.check : i + 1}</span><span class="lbl">${l}</span></li>`)
+  const steps = [["step.details", "sec-details"], ["step.guests", "sec-guests"], ["step.file", "sec-report"], ["step.reported", "sec-report"]];
+  return `<ol class="stepper">${steps
+    .map(([label, target], i) => `<li class="${done[i] ? "done" : ""} ${current === i ? "current" : ""}">
+      <button data-action="jump-section" data-target="${target}" ${current === i ? 'aria-current="step"' : ""}><span class="dot">${done[i] ? ICON.check : i + 1}</span><span class="lbl">${t(label)}</span></button></li>`)
     .join("")}</ol>`;
 }
 
 function renderStay(stay) {
   if (!stay) return `<p>—</p>`;
-  const isBusy = busy?.stayId === stay.id;
   return `
     <button class="back" data-action="nav" data-view="stays">${ICON.back}${t("nav.stays")}</button>
     <div data-status="stepper">${renderStepper(stay)}</div>
 
-    <section class="card">
-      <h2><span class="num">1</span>${t("stay.details")}</h2>
-      <label>${t("stay.apartment")}
-        <select data-stay-field="propertyId">
-          <option value="">${t("stay.choose")}</option>
-          ${state.properties.map((p) => `<option value="${p.id}" ${p.id === stay.propertyId ? "selected" : ""}>${esc(p.label || p.name || "—")}</option>`).join("")}
-        </select>
-      </label>
+    <section class="card" id="sec-details">
+      <h2 tabindex="-1"><span class="num">1</span>${t("stay.details")}</h2>
+      <label for="in-property">${t("stay.apartment")}</label>
+      <select id="in-property" data-stay-field="propertyId">
+        <option value="">${t("stay.choose")}</option>
+        ${state.properties.map((p) => `<option value="${p.id}" ${p.id === stay.propertyId ? "selected" : ""}>${esc(p.label || p.name || "—")}</option>`).join("")}
+      </select>
       ${state.properties.length ? "" : `<p class="hint"><button class="link" data-action="nav" data-view="settings">${t("stay.noApartments")}</button></p>`}
       <div class="two">
-        <label>${t("stay.arrival")}<input type="date" data-stay-field="arrival" value="${esc(stay.arrival)}"></label>
-        <label>${t("stay.departure")}<input type="date" data-stay-field="departure" value="${esc(stay.departure)}"></label>
+        <div><label for="in-arrival">${t("stay.arrival")}</label><input type="date" id="in-arrival" data-stay-field="arrival" value="${esc(stay.arrival)}"></div>
+        <div><label for="in-departure">${t("stay.departure")}</label><input type="date" id="in-departure" data-stay-field="departure" value="${esc(stay.departure)}"></div>
       </div>
+      <div class="nights"><span class="muted small">${t("stay.nightsLabel")}</span>${[1, 2, 3, 7]
+        .map((n) => `<button class="chip" data-action="set-nights" data-n="${n}" aria-label="${esc(t("stay.nights", { n }))}">${n}</button>`).join("")}</div>
       <div data-status="deadline">${renderDeadline(stay)}</div>
-      <label>${t("stay.note")}<input data-stay-field="label" value="${esc(stay.label)}" placeholder="${esc(t("stay.notePlaceholder"))}"></label>
+      <label for="in-label">${t("stay.note")}</label>
+      <input id="in-label" data-stay-field="label" value="${esc(stay.label)}" placeholder="${esc(t("stay.notePlaceholder"))}">
     </section>
 
-    <section class="card">
-      <h2><span class="num">2</span>${t("stay.guests")}</h2>
+    <section class="card" id="sec-guests">
+      <h2 tabindex="-1"><span class="num">2</span>${t("stay.guests")}</h2>
       <div class="ask">
         <span class="muted small">${ICON.chat}${t("stay.askGuest")}</span>
         <span class="chips">${Object.entries(LANGS).map(([code, label]) => `<button class="chip" data-action="copy-guest-message" data-lang="${code}">${label}</button>`).join("")}</span>
       </div>
-      ${isBusy ? renderScanner() : `
-      <label class="upload">
-        <input type="file" accept="image/*" multiple data-action="photos">
-        <span class="upload-icon">${passportArt()}</span>
-        <span class="upload-title">${t("upload.title")}</span>
-        <small>${t("upload.hint")}</small>
-      </label>`}
-      ${stay.guests.map((g, i) => renderGuest(stay, g, i)).join("")}
-      <button class="wide ghost" data-action="add-guest">${t("stay.addByHand")}</button>
+      <div data-status="photo-area">${renderPhotoArea(stay)}</div>
+      <div data-status="guest-summary">${renderGuestSummary(stay)}</div>
+      <div class="guest-list">${stay.guests.map((g, i) => renderGuest(stay, g, i)).join("")}</div>
     </section>
 
-    <section class="card">
-      <h2><span class="num">3</span>${t("report.title")}</h2>
+    <section class="card" id="sec-report">
+      <h2 id="report-title" tabindex="-1"><span class="num">3</span>${t("report.title")}</h2>
       <div data-status="report">${renderReport(stay)}</div>
       <details><summary>${t("report.manual")}</summary>${renderManualCopy(stay)}</details>
     </section>
@@ -534,12 +653,61 @@ function passportArt() {
     <rect x="8" y="32" width="48" height="2.4" rx="1.2" class="pp-mrz"/><rect x="8" y="36.5" width="48" height="2.4" rx="1.2" class="pp-mrz"/></svg>`;
 }
 
-function renderScanner() {
-  return `<div class="scanner" role="status">
-    <div class="scan-doc">${passportArt()}<span class="beam"></span></div>
-    <div class="scan-text" id="scan-text">${t("scan.1")}</div>
-    <small class="muted">${t("scan.time")}</small>
-  </div>`;
+function renderPhotoArea(stay) {
+  if (reading?.stayId === stay.id) {
+    return `<div class="scanner" role="status">
+      <div class="scan-doc">${passportArt()}<span class="beam"></span></div>
+      <div class="scan-text" id="progress-text">${progressText()}</div>
+      ${reading.batches > 1 ? `<small class="muted">${t("progress.batch", { i: reading.batch, n: reading.batches })}</small>` : ""}
+      <button data-action="cancel-reading">${t("sheet.cancel")}</button>
+    </div>`;
+  }
+  if (tray?.stayId === stay.id) {
+    return `<div class="tray">
+      <p class="muted small">${t("tray.hint")}</p>
+      <div class="tray-grid">${tray.items
+        .map((it, k) => `<figure class="tray-item">
+          <img src="${it.url}" style="--rot:${it.rotation * 90}deg" alt="${esc(t("guest.photo", { n: k + 1 }))}">
+          <div class="tray-tools">
+            <button data-action="tray-rotate" data-id="${it.id}" aria-label="${esc(t("tray.rotate"))}">${ICON.rotate}</button>
+            <button data-action="tray-remove" data-id="${it.id}" aria-label="${esc(t("tray.remove"))}">${ICON.close}</button>
+          </div></figure>`)
+        .join("")}
+        <button class="tray-add" data-action="pick-photos">${t("tray.add")}</button>
+      </div>
+      <div class="row-buttons end">
+        <button data-action="tray-cancel">${t("sheet.cancel")}</button>
+        <button class="primary" data-action="tray-read" ${tray.items.length ? "" : "disabled"}>${ICON.camera}${t("tray.read", { n: tray.items.length })}</button>
+      </div>
+    </div>`;
+  }
+  return `<div class="add-guests">
+      <button class="add-btn main" data-action="pick-photos">${ICON.camera}<span>${t("upload.photos")}</span></button>
+      <button class="add-btn" data-action="add-guest">${ICON.pen}<span>${t("upload.manual")}</span></button>
+    </div>
+    <p class="privacy muted small">${ICON.lock}<span>${t("upload.privacy")} ${t("upload.paste")}</span></p>`;
+}
+
+function progressText() {
+  if (!reading) return "";
+  if (reading.phase === "prepare") return t("progress.prepare", { i: reading.i, n: reading.n });
+  if (reading.phase === "check") return t("progress.check");
+  if (reading.phase === "send" && reading.sentAt) return t("progress.wait", { s: Math.floor((Date.now() - reading.sentAt) / 1000) });
+  return t("progress.send");
+}
+
+function syncProgressTimer() {
+  if (!reading) {
+    clearInterval(progressTimer);
+    progressTimer = null;
+    return;
+  }
+  if (!progressTimer) progressTimer = setInterval(updateProgress, 1000);
+}
+
+function updateProgress() {
+  const el = document.getElementById("progress-text");
+  if (el) el.textContent = progressText();
 }
 
 function renderDeadline(stay) {
@@ -547,29 +715,67 @@ function renderDeadline(stay) {
   return `<p class="deadline">⏰ ${t("stay.deadline", { date: niceDate(reportDeadline(stay.arrival)) })}</p>`;
 }
 
+function renderGuestSummary(stay) {
+  const n = stay.guests.length;
+  if (!n) return "";
+  const ready = stay.guests.filter((g) => guestReady(stay, g)).length;
+  const next = stay.guests.find((g) => !guestReady(stay, g));
+  const withAddress = stay.guests.find((g) => g.address.trim());
+  const without = stay.guests.filter((g) => !g.address.trim()).length;
+  return `<div class="guest-summary">
+    <span class="pill ${ready === n ? "ok" : "muted"}">${t("guests.ready", { r: ready, n })}</span>
+    ${next ? `<button class="chip" data-action="next-guest">${t("guests.next")} →</button>` : ""}
+    ${withAddress && without > 1 ? `<button class="chip" data-action="address-all" data-guest="${withAddress.id}">${esc(t("guests.useAddressAll", { name: firstName(withAddress) }))}</button>` : ""}
+  </div>`;
+}
+
+// The to-do list before export, with every item jumping to the field that needs it.
+function reportItems(stay) {
+  const property = findProperty(stay.propertyId);
+  const items = [];
+  for (const issue of stayIssues(stay, property, today())) {
+    if (issue.code === "badGuests") {
+      for (const id of issue.params.ids) {
+        const g = stay.guests.find((x) => x.id === id);
+        const fields = [...new Set(issuesOf(stay, g).filter((i) => i.level === "error").map((i) => t(FIELD_LABEL[i.field] || "f.surname")))];
+        items.push({ text: `${guestName(g)} — ${t("guest.missing", { list: fields.join(", ") })}`, guest: id });
+      }
+    } else if (issue.code === "unreviewed") {
+      for (const id of issue.params.ids) items.push({ text: `${guestName(stay.guests.find((x) => x.id === id))} — ${t("guest.needsReview")}`, guest: id });
+    } else {
+      const target = { chooseProperty: "in-property", noIdub: "settings", dates: stay.arrival ? "in-departure" : "in-arrival", datesInvalid: "in-arrival", datesOrder: "in-departure", noGuests: "sec-guests" }[issue.code];
+      items.push({ text: t("s." + issue.code, issue.params || {}), target });
+    }
+  }
+  return items;
+}
+
 // Everything in the "Report to the police" card that depends on the current data.
 function renderReport(stay) {
   const property = findProperty(stay.propertyId);
   const stage = stageOf(stay);
-  const issues = stayIssues(stay, property, today());
+  const items = reportItems(stay);
   const apartmentWarnings = propertyIssues(property).filter((i) => i.level === "warn");
   const fresh = stay.export && stay.export.fp === currentFp(stay);
+  const attempted = showAll.has(stay.id);
   const banner =
     stage === "changedAfterReport" ? `<p class="banner bad">${t("report.changedAfterReport")}</p>`
     : stage === "changed" && stay.export ? `<p class="banner warn">${t("report.changedSinceExport")}</p>` : "";
-  const status = issues.length
-    ? `<p class="still">${t("report.stillNeeded")}</p><ul class="errors">${issues.map((i) => `<li>${esc(t("s." + i.code, i.params || {}))}</li>`).join("")}</ul>`
+  const status = items.length
+    ? `<p class="still">${t("report.stillNeeded")}</p><ul class="todo ${attempted ? "attempted" : ""}">${items
+        .map((it) => `<li><button class="todo-item" data-action="jump" ${it.guest ? `data-guest="${it.guest}"` : `data-target="${it.target}"`}>${esc(it.text)}${ICON.chevron}</button></li>`)
+        .join("")}</ul>`
     : `<p class="all-good"><svg viewBox="0 0 24 24" class="draw-check"><circle cx="12" cy="12" r="10"/><path d="m7 12.5 3.3 3.3L17 9"/></svg>${t("report.allGood")}</p>`;
   const apartment = apartmentWarnings.length
     ? `<p class="still">${t("report.apartmentWarnings")}</p><ul class="warnings">${apartmentWarnings.map((i) => `<li>${esc(t("pw." + i.code))}</li>`).join("")}</ul>` : "";
   const reported = stage === "reported" && stay.report
     ? `<p class="all-good">${ICON.check}${t("report.reportedOn", { date: esc(niceDateTime(stay.report.at)), method: t(stay.report.method === "form" ? "report.methodForm" : "report.methodFile") })}${stay.report.ref ? ` · ${esc(stay.report.ref)}` : ""}</p>
        <button data-action="reopen">↺ ${t("report.reopen")}</button>`
-    : `<button class="success" data-action="open-report-sheet" ${issues.length ? "disabled" : ""}>${ICON.check}${t("report.confirm")}</button>`;
+    : `<button class="success" data-action="open-report-sheet" ${items.length ? "disabled" : ""}>${ICON.check}${t("report.confirm")}</button>`;
   return `${banner}${status}${apartment}
     <div class="rsteps">
       <div class="rstep"><span class="rnum">1</span><div>
-        <button class="primary" data-action="export" ${issues.length ? "disabled" : ""}>${ICON.download}${t(stay.export && !fresh ? "report.downloadAgain" : "report.download")}</button>
+        <button class="primary" data-action="export">${ICON.download}${t(stay.export && !fresh ? "report.downloadAgain" : "report.download")}</button>
         ${stay.export ? `<div class="muted small">${t("report.downloaded", { date: esc(niceDateTime(stay.export.at)) })}</div>` : ""}
       </div></div>
       <div class="rstep"><span class="rnum">2</span><div>${t("report.upload", { url: UBYPORT_URL })}</div></div>
@@ -577,77 +783,103 @@ function renderReport(stay) {
     </div>`;
 }
 
-function renderGuestTitle(g, i) {
+function mrzBadge(g) {
   const mrz = mrzState(g);
-  const mrzBadge =
-    mrz.state === "ok" ? `<span class="pill ok verified" title="${esc(t("guest.verifiedTitle"))}">${ICON.check}${t("guest.mrzOk")}</span>`
-    : mrz.state === "failed" ? `<span class="pill bad">⚠ ${t("guest.mrzFailed")}</span>`
-    : mrz.state === "edited" ? `<span class="pill warn">⚠ ${t("guest.mrzEdited")}</span>` : "";
+  if (mrz.state === "ok") return `<span class="pill ok" title="${esc(t("guest.verifiedTitle"))}">${ICON.check}${t("guest.mrzOk")}</span>`;
+  if (mrz.state === "failed") return `<span class="pill bad">⚠ ${t("guest.mrzFailed")}</span>`;
+  if (mrz.state === "edited") return `<span class="pill warn">⚠ ${t("guest.mrzEdited")}</span>`;
+  return "";
+}
+
+function renderGuestRow(stay, g, i) {
+  const issues = issuesOf(stay, g);
+  const missing = [...new Set(issues.filter((x) => x.level === "error").map((x) => t(FIELD_LABEL[x.field] || "f.surname")))];
+  const status = guestReady(stay, g)
+    ? `<span class="pill ok">${ICON.check}${t("guest.reviewed")}</span>`
+    : missing.length && !isBlank(g) ? `<span class="pill bad">${esc(t("guest.missing", { list: missing.join(", ") }))}</span>`
+    : `<span class="pill warn">${t("guest.needsReview")}</span>`;
+  const doc = g.documentNumber ? ` · ••••${esc(g.documentNumber.slice(-4))}` : "";
   return `${avatar(g)}<span class="guest-name"><strong>${esc(guestName(g))}</strong>
-    <span class="muted small">${g.nationality ? `${flag(g.nationality)} ${esc(countryName(g.nationality))}` : `#${i + 1}`}</span></span><span class="pills">${mrzBadge}</span>`;
+      <span class="muted small meta">${g.nationality ? `${flag(g.nationality)} ${esc(countryName(g.nationality))}` : `#${i + 1}`}${doc}</span>
+      <span class="pills">${mrzBadge(g)}${status}</span></span><span class="chev">${ICON.chevron}</span>`;
 }
 
-function renderGuestStatus(stay, g) {
-  const issues = guestIssues(g, stay, today());
-  const errors = issues.filter((i) => i.level === "error");
-  const warnings = issues.filter((i) => i.level === "warn");
-  const review = isReviewed(g)
-    ? `<p class="reviewed">${ICON.check}${t("guest.reviewed")}</p>`
-    : `<div class="review"><button class="success" data-action="review-guest" data-guest="${g.id}" ${errors.length ? "disabled" : ""}>${ICON.check}${t("guest.review")}</button>
-        <span class="muted small">${t("guest.reviewHint")}</span></div>`;
-  return (
-    (errors.length ? `<ul class="errors">${errors.map((i) => `<li>${issueText(i)}</li>`).join("")}</ul>` : "") +
-    (warnings.length ? `<ul class="warnings">${warnings.map((i) => `<li>${issueText(i)}</li>`).join("")}</ul>` : "") +
-    review
-  );
+// Messages under one field: warnings always, errors once the field was visited.
+function fieldMessages(stay, g, field, issues) {
+  const own = issues.filter((i) => i.field === field && (i.level === "warn" || errorsVisible(stay, g, field)));
+  return own.map((i) => `<span class="msg ${i.level}">${esc(t("v." + i.code, i.params || {}))}</span>`).join("");
 }
 
-function nationalityOptions(selected) {
-  const lang = getLang();
-  return Object.keys(COUNTRIES)
-    .map((code) => [code, countryName(code)])
-    .sort((a, b) => a[1].localeCompare(b[1], lang))
-    .map(([code, name]) => `<option value="${code}" ${code === selected ? "selected" : ""}>${flag(code)} ${esc(name)} (${code})</option>`)
+const fieldInvalid = (stay, g, field, issues) => errorsVisible(stay, g, field) && issues.some((i) => i.field === field && i.level === "error");
+
+function renderGuestTop(stay, g) {
+  const general = issuesOf(stay, g).filter((i) => !i.field);
+  const hint = isBlank(g) && !showAll.has(g.id) && !showAll.has(stay.id) ? `<p class="hint-box">${t("guest.newHint")}</p>` : "";
+  return hint + general.map((i) => `<p class="msg warn">${esc(t("v." + i.code, i.params || {}))}</p>`).join("");
+}
+
+function renderAddressChips(stay, g) {
+  if (g.address.trim()) return "";
+  return stay.guests
+    .filter((o) => o !== g && o.address.trim())
+    .slice(0, 2)
+    .map((o) => `<button class="chip" data-action="use-address" data-guest="${g.id}" data-from="${o.id}">${esc(t("guest.useAddress", { name: firstName(o) }))}</button>`)
     .join("");
 }
 
+function renderGuestActions(stay, g) {
+  return isReviewed(g) && !hasErrors(stay, g)
+    ? `<p class="reviewed">${ICON.check}${t("guest.reviewed")}</p>`
+    : `<div class="review"><button class="success" data-action="review-guest" data-guest="${g.id}">${ICON.check}${t("guest.review")}</button>
+        <span class="muted small">${t("guest.reviewHint")}</span></div>`;
+}
+
+function renderGuestPhotos(g) {
+  const list = photos.get(g.id);
+  if (!list?.length) return "";
+  return `<div class="guest-photos">${list
+    .map((p, k) => `<button class="thumb" data-action="view-photo" data-guest="${g.id}" data-k="${k}" aria-label="${esc(t("guest.photo", { n: k + 1 }))}">
+      <img src="${p.url}" style="--rot:${p.rotation * 90}deg" alt=""></button>`)
+    .join("")}</div>`;
+}
+
+function nationalityButton(g) {
+  return g.nationality ? `${flag(g.nationality)} ${esc(countryName(g.nationality))} (${g.nationality})` : t("stay.choose");
+}
+
 function renderGuest(stay, g, i) {
-  const hasErrors = guestIssues(g, stay, today()).some((x) => x.level === "error");
-  const f = (field, label, attrs = "") =>
-    `<label>${label}<input data-guest="${g.id}" data-field="${field}" value="${esc(g[field])}" ${attrs}></label>`;
+  const open = expanded.has(g.id);
+  const issues = issuesOf(stay, g);
+  const attrs = (field) => {
+    const invalid = fieldInvalid(stay, g, field, issues);
+    return `id="in-${g.id}-${field}" data-guest="${g.id}" data-field="${field}" aria-describedby="msg-${g.id}-${field}" ${invalid ? 'aria-invalid="true"' : ""}`;
+  };
+  const wrap = (field, control, extra = "") => `<div class="field">
+      <label for="in-${g.id}-${field}">${t(FIELD_LABEL[field])}</label>${control}${extra}
+      <div class="field-msg" id="msg-${g.id}-${field}" data-msg="${field}">${fieldMessages(stay, g, field, issues)}</div></div>`;
+  const text = (field, more = "") => wrap(field, `<input ${attrs(field)} value="${esc(g[field])}" ${more}>`);
   return `
-  <div class="guest ${hasErrors ? "has-errors" : ""} ${freshGuests.has(g.id) ? "pop-in" : ""}" style="--i:${i}" data-guest-card="${g.id}">
-    <div class="guest-head" data-status="guest-title">${renderGuestTitle(g, i)}</div>
-    <div class="two">
-      ${f("surname", t("f.surname"), 'autocapitalize="words"')}
-      ${f("givenNames", t("f.givenNames"), 'autocapitalize="words"')}
+  <div class="guest ${open ? "open" : ""} ${freshGuests.has(g.id) ? "pop-in" : ""}" style="--i:${i}" data-guest-card="${g.id}">
+    <button class="guest-row" data-action="toggle-guest" data-guest="${g.id}" aria-expanded="${open}" aria-controls="gbody-${g.id}">
+      <span class="guest-head" data-status="guest-row">${renderGuestRow(stay, g, i)}</span>
+    </button>
+    <div class="guest-body" id="gbody-${g.id}" ${open ? "" : "hidden"}>
+      ${renderGuestPhotos(g)}
+      <div data-status="guest-top">${renderGuestTop(stay, g)}</div>
+      <div class="two">${text("surname", 'autocapitalize="words" autocomplete="off"')}${text("givenNames", 'autocapitalize="words" autocomplete="off"')}</div>
+      <div class="two">
+        ${wrap("birthDate", `<input type="date" ${attrs("birthDate")} value="${esc(g.birthDate)}">`)}
+        ${wrap("nationality", `<button type="button" class="select-btn" ${attrs("nationality")} data-action="pick-country">${nationalityButton(g)}</button>`)}
+      </div>
+      <div class="two">${text("documentNumber", 'autocapitalize="characters" autocomplete="off"')}${text("visa", 'autocapitalize="characters" autocomplete="off"')}</div>
+      ${wrap("address", `<input ${attrs("address")} value="${esc(g.address)}" placeholder="${esc(t("f.addressPlaceholder"))}" autocomplete="off">`, `<div class="chips" data-status="addr-chips">${renderAddressChips(stay, g)}</div>`)}
+      <div class="two">
+        ${wrap("purpose", `<select ${attrs("purpose")}>${PURPOSE_CODES.map((code) => `<option value="${code}" ${code === g.purpose ? "selected" : ""}>${code} · ${esc(t("purpose." + code))}</option>`).join("")}</select>`)}
+        ${text("note", 'autocomplete="off"')}
+      </div>
+      <div data-status="guest-actions">${renderGuestActions(stay, g)}</div>
+      <button class="link danger-link" data-action="remove-guest" data-guest="${g.id}">${t("guest.remove")}</button>
     </div>
-    <div class="two">
-      <label>${t("f.birthDate")}<input type="date" data-guest="${g.id}" data-field="birthDate" value="${esc(g.birthDate)}"></label>
-      <label>${t("f.nationality")}
-        <select data-guest="${g.id}" data-field="nationality"><option value="">${t("stay.choose")}</option>${nationalityOptions(g.nationality)}</select>
-      </label>
-    </div>
-    <div class="two">
-      ${f("documentNumber", t("f.documentNumber"), 'autocapitalize="characters" autocomplete="off"')}
-      ${f("visa", t("f.visa"), 'autocapitalize="characters"')}
-    </div>
-    <label>${t("f.address")}
-      <span class="inline">
-        <input data-guest="${g.id}" data-field="address" value="${esc(g.address)}" placeholder="${esc(t("f.addressPlaceholder"))}">
-        ${i > 0 ? `<button class="chip" data-action="address-from-first" data-guest="${g.id}" title="${esc(t("guest.sameAddressTitle"))}">${t("guest.sameAddress")}</button>` : ""}
-      </span>
-    </label>
-    <div class="two">
-      <label>${t("f.purpose")}
-        <select data-guest="${g.id}" data-field="purpose">
-          ${PURPOSE_CODES.map((code) => `<option value="${code}" ${code === g.purpose ? "selected" : ""}>${code} · ${esc(t("purpose." + code))}</option>`).join("")}
-        </select>
-      </label>
-      ${f("note", t("f.note"))}
-    </div>
-    <div data-status="guest">${renderGuestStatus(stay, g)}</div>
-    <button class="link danger-link" data-action="remove-guest" data-guest="${g.id}">${t("guest.remove")}</button>
   </div>`;
 }
 
@@ -679,21 +911,6 @@ function renderSettings() {
   const s = state.settings;
   return `
     <section class="card">
-      <h2>🎨 ${t("set.look")}</h2>
-      <div class="theme-grid">${THEMES.map(
-        (th, i) => `<button class="theme-card ${s.theme === th.id ? "selected" : ""}" data-action="set-theme" data-theme-id="${th.id}" aria-pressed="${s.theme === th.id}">
-          <span class="theme-preview" data-theme="${th.id}">${skylineSvg(11 + i)}</span>
-          <span class="theme-name">${t(`theme.${th.id}.name`)}<span class="theme-check">${ICON.check}</span></span>
-          <span class="theme-tag">${t(`theme.${th.id}.tag`)}</span>
-        </button>`,
-      ).join("")}</div>
-      <label>${t("set.language")}</label>
-      <div class="segmented">${Object.entries(LANGS)
-        .map(([code]) => `<button class="${getLang() === code ? "on" : ""}" data-action="set-lang" data-lang="${code}">${{ en: "English", cs: "Čeština", ru: "Русский" }[code]}</button>`)
-        .join("")}</div>
-    </section>
-
-    <section class="card">
       <h2>🏠 ${t("set.apartments")}</h2>
       <p class="muted small">${t("set.apartmentsHint")}</p>
       ${state.properties.map(renderProperty).join("")}
@@ -703,10 +920,10 @@ function renderSettings() {
     <section class="card">
       <h2>🔍 ${t("set.reading")}</h2>
       <p class="muted small">${t("set.readingHint")}</p>
-      <label>${t("set.apiKey")}<input type="password" data-setting="apiKey" value="${esc(s.apiKey)}" placeholder="sk-ant-…" autocomplete="off"></label>
-      <label>${t("set.model")}
-        <select data-setting="model">${Object.entries(MODELS).map(([id, key]) => `<option value="${id}" ${id === s.model ? "selected" : ""}>${esc(t(key))}</option>`).join("")}</select>
-      </label>
+      <label for="in-apikey">${t("set.apiKey")}</label>
+      <input id="in-apikey" type="password" data-setting="apiKey" value="${esc(s.apiKey)}" placeholder="sk-ant-…" autocomplete="off">
+      <label for="in-model">${t("set.model")}</label>
+      <select id="in-model" data-setting="model">${Object.entries(MODELS).map(([id, key]) => `<option value="${id}" ${id === s.model ? "selected" : ""}>${esc(t(key))}</option>`).join("")}</select>
     </section>
 
     <section class="card">
@@ -715,8 +932,23 @@ function renderSettings() {
       <p class="backup-status"><b>${backupLine()}</b><br><span class="muted small">${t(storageMode === "persisted" ? "backup.storagePersisted" : "backup.storageBestEffort")}</span></p>
       <div class="row-buttons">
         <button class="primary" data-action="backup">${ICON.shield}${t("backup.now")}</button>
-        <label class="button-like">${t("set.restore")}<input type="file" accept="application/json,.json" data-action="restore" hidden></label>
+        <button data-action="pick-restore">${t("set.restore")}</button>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>🎨 ${t("set.look")}</h2>
+      <div class="theme-grid">${THEMES.map(
+        (th, i) => `<button class="theme-card ${s.theme === th.id ? "selected" : ""}" data-action="set-theme" data-theme-id="${th.id}" aria-pressed="${s.theme === th.id}">
+          <span class="theme-preview" data-theme="${th.id}">${skylineSvg(11 + i)}</span>
+          <span class="theme-name">${t(`theme.${th.id}.name`)}<span class="theme-check">${ICON.check}</span></span>
+          <span class="theme-tag">${t(`theme.${th.id}.tag`)}</span>
+        </button>`,
+      ).join("")}</div>
+      <p class="label">${t("set.language")}</p>
+      <div class="segmented">${Object.keys(LANGS)
+        .map((code) => `<button class="${getLang() === code ? "on" : ""}" data-action="set-lang" data-lang="${code}" aria-pressed="${getLang() === code}">${LANG_NAMES[code]}</button>`)
+        .join("")}</div>
     </section>`;
 }
 
@@ -724,17 +956,17 @@ function renderPropertySummary(p) {
   const issues = propertyIssues(p);
   const pill = issues.some((i) => i.level === "error") ? `<span class="pill bad">${t("set.idubMissing")}</span>`
     : issues.length ? `<span class="pill warn">${t("set.checkDetails")}</span>` : "";
-  return `<strong>${esc(p.label || p.name || t("set.newApartment"))}</strong> ${p.idub ? `<span class="muted small">IDUB ${esc(p.idub)}</span>` : ""} ${pill}`;
+  return `${aptDot(p)}<strong>${esc(p.label || p.name || t("set.newApartment"))}</strong> ${p.idub ? `<span class="muted small">IDUB ${esc(p.idub)}</span>` : ""} ${pill}`;
 }
 
 function renderProperty(p) {
   const f = (field, label, attrs = "") =>
-    `<label>${t(label)}<input data-property="${p.id}" data-field="${field}" value="${esc(p[field])}" ${attrs}></label>`;
+    `<div><label for="in-${p.id}-${field}">${t(label)}</label><input id="in-${p.id}-${field}" data-property="${p.id}" data-field="${field}" value="${esc(p[field])}" ${attrs}></div>`;
   return `
   <details class="property" ${p.idub ? "" : "open"}>
     <summary data-status="property" data-id="${p.id}">${renderPropertySummary(p)}</summary>
     ${f("label", "p.label", `placeholder="${esc(t("p.labelPlaceholder"))}"`)}
-    <div class="two">${f("idub", "p.idub")}${f("abbr", "p.abbr")}</div>
+    <div class="two">${f("idub", "p.idub", 'inputmode="numeric"')}${f("abbr", "p.abbr")}</div>
     ${f("name", "p.name")}
     ${f("contact", "p.contact")}
     <div class="two">${f("district", "p.district")}${f("municipality", "p.municipality")}</div>
@@ -756,33 +988,52 @@ function renderHelp() {
   </section>`;
 }
 
-// Updates validation messages in place, leaving the inputs alone, so focus and
-// the field the user is about to tap survive every keystroke.
 // Replaces markup only when it changed, so a button about to be tapped isn't swapped out.
 function setHtml(el, html) {
   if (el && el.innerHTML !== html) el.innerHTML = html;
 }
 
-function refreshStatus() {
+function refreshGuest(stay, g, i) {
+  const card = document.querySelector(`[data-guest-card="${g.id}"]`);
+  if (!card) return;
+  const issues = issuesOf(stay, g);
+  setHtml(card.querySelector('[data-status="guest-row"]'), renderGuestRow(stay, g, i));
+  if (!expanded.has(g.id)) return;
+  setHtml(card.querySelector('[data-status="guest-top"]'), renderGuestTop(stay, g));
+  for (const field of GUEST_INPUTS) {
+    setHtml(card.querySelector(`[data-msg="${field}"]`), fieldMessages(stay, g, field, issues));
+    const input = card.querySelector(`#in-${g.id}-${field}`);
+    if (fieldInvalid(stay, g, field, issues)) input?.setAttribute("aria-invalid", "true");
+    else input?.removeAttribute("aria-invalid");
+  }
+  setHtml(card.querySelector(`#in-${g.id}-nationality`), nationalityButton(g));
+  setHtml(card.querySelector('[data-status="addr-chips"]'), renderAddressChips(stay, g));
+  setHtml(card.querySelector('[data-status="guest-actions"]'), renderGuestActions(stay, g));
+}
+
+// Updates status areas in place, leaving the inputs alone, so focus and the
+// field the user is about to tap survive every keystroke.
+function refreshStatus(onlyGuest) {
   const stay = view.name === "stay" ? findStay(view.id) : null;
   if (stay) {
-    const set = (sel, html) => document.querySelectorAll(sel).forEach((el) => setHtml(el, html));
-    set('[data-status="report"]', renderReport(stay));
-    set('[data-status="deadline"]', renderDeadline(stay));
-    set('[data-status="stepper"]', renderStepper(stay));
+    setHtml(document.querySelector('[data-status="report"]'), renderReport(stay));
+    setHtml(document.querySelector('[data-status="deadline"]'), renderDeadline(stay));
+    setHtml(document.querySelector('[data-status="stepper"]'), renderStepper(stay));
+    setHtml(document.querySelector('[data-status="guest-summary"]'), renderGuestSummary(stay));
     setHtml(document.getElementById("hero-text"), renderHeroText());
-    stay.guests.forEach((g, i) => {
-      const card = document.querySelector(`[data-guest-card="${g.id}"]`);
-      if (!card) return;
-      card.classList.toggle("has-errors", guestIssues(g, stay, today()).some((x) => x.level === "error"));
-      setHtml(card.querySelector('[data-status="guest-title"]'), renderGuestTitle(g, i));
-      setHtml(card.querySelector('[data-status="guest"]'), renderGuestStatus(stay, g));
-    });
+    stay.guests.forEach((g, i) => (!onlyGuest || g.id === onlyGuest) && refreshGuest(stay, g, i));
   }
   document.querySelectorAll('[data-status="property"]').forEach((el) => {
     const p = findProperty(el.dataset.id);
     if (p) setHtml(el, renderPropertySummary(p));
   });
+}
+
+// Layout changes while a finger is down can make the tap land on the wrong thing,
+// so status updates triggered by leaving a field wait until the tap is over.
+function refreshSoon(onlyGuest) {
+  if (pointerDown) refreshPending = true;
+  else refreshStatus(onlyGuest);
 }
 
 // ---------------------------------------------------------------- actions
@@ -810,6 +1061,15 @@ function exportFiles(stays, { force = false } = {}) {
   showFlash("ok", t("toast.downloaded", { n: byProperty.size }));
 }
 
+// Export attempt with something missing: show every problem and go to the list.
+function showProblems(stay) {
+  showAll.add(stay.id);
+  const firstBad = stay.guests.find((g) => !guestReady(stay, g));
+  if (firstBad) expanded.add(firstBad.id);
+  render();
+  focusField(document.getElementById("report-title"));
+}
+
 async function backupNow() {
   const payload = JSON.stringify(backupPayload(state), null, 2);
   const name = `ubyport-helper-backup-${today()}.json`;
@@ -833,29 +1093,80 @@ function replaceState(next) {
   changeLanguage(state.settings.lang || getLang());
 }
 
-async function addPhotos(stay, files) {
-  if (!files.length) return;
-  if (!state.settings.apiKey) return showFlash("error", t("toast.needKey"));
-  busy = { stayId: stay.id };
+function pickPhotos() {
+  if (!state.settings.apiKey) return openSheet({ kind: "apikey", key: "", files: null });
+  document.getElementById("photo-input").click();
+}
+
+function addToTray(files) {
+  const stay = view.name === "stay" ? findStay(view.id) : null;
+  const images = files.filter((f) => f.type.startsWith("image/") || /\.(heic|heif|jpe?g|png|webp)$/i.test(f.name));
+  if (!stay || !images.length || reading) return;
+  if (!state.settings.apiKey) return openSheet({ kind: "apikey", key: "", files: images });
+  if (tray?.stayId !== stay.id) discardTray();
+  tray ||= { stayId: stay.id, items: [] };
+  for (const file of images) tray.items.push({ id: uid(), file, url: URL.createObjectURL(file), rotation: 0 });
+  refreshPhotoArea(stay);
+}
+
+function discardTray() {
+  for (const it of tray?.items || []) URL.revokeObjectURL(it.url);
+  tray = null;
+}
+
+function refreshPhotoArea(stay) {
+  setHtml(document.querySelector('[data-status="photo-area"]'), renderPhotoArea(stay));
+}
+
+// Adds read guests to the stay, keeps their photos for review and opens the first one.
+function addReadGuests(stay, items, guests) {
+  const used = new Set();
+  let firstNew = null;
+  for (const { imageIndexes = [], ...g } of guests) {
+    const guest = { ...emptyGuest(), ...g, id: uid() };
+    const own = imageIndexes.map((k) => items[k]).filter(Boolean);
+    own.forEach((it) => used.add(it));
+    if (own.length) photos.set(guest.id, own.map((it) => ({ url: it.url, rotation: it.rotation })));
+    freshGuests.add(guest.id);
+    stay.guests.push(guest);
+    firstNew ||= guest;
+  }
+  for (const it of items) if (!used.has(it)) URL.revokeObjectURL(it.url);
+  if (firstNew && ![...expanded].some((id) => stay.guests.some((g) => g.id === id))) expanded.add(firstNew.id);
+  if (guests.length) noteChange();
+  saveNow();
+}
+
+async function readTray() {
+  const stay = findStay(tray?.stayId);
+  if (!stay || !tray.items.length) return;
+  const items = tray.items;
+  tray = null;
+  reading = { stayId: stay.id, phase: "prepare", i: 0, n: items.length, batch: 1, batches: 1, sentAt: null, controller: new AbortController() };
   flash = null;
   render();
+  const onProgress = (p) => {
+    if (!reading) return;
+    if (p.phase === "batch") Object.assign(reading, { batch: p.i, batches: p.n });
+    else if (p.phase === "prepare") Object.assign(reading, { phase: "prepare", i: p.i, n: p.n });
+    else Object.assign(reading, { phase: p.phase, sentAt: p.phase === "send" ? Date.now() : reading.sentAt });
+    updateProgress();
+  };
   try {
-    const { guests, unusable } = await readDocuments(files, { ...state.settings, noteLanguage: t("noteLanguage") });
-    for (const g of guests) {
-      const guest = { ...emptyGuest(), ...g, id: uid() };
-      freshGuests.add(guest.id);
-      stay.guests.push(guest);
-    }
-    noteChange();
-    saveNow();
-    busy = null;
+    const { guests, unusable } = await readDocuments(items, { ...state.settings, noteLanguage: t("noteLanguage"), signal: reading.controller.signal, onProgress });
+    reading = null;
+    addReadGuests(stay, items, guests);
     const parts = [guests.length ? t("toast.found", { n: guests.length }) : t("toast.foundNone")];
     if (unusable.length) parts.push(t("toast.skipped", { list: unusable.join("; ") }));
     showFlash(guests.length ? "ok" : "error", parts.join(" · "));
   } catch (err) {
-    busy = null;
+    reading = null;
+    const partial = err.partial?.guests || [];
+    addReadGuests(stay, items, partial);
     const { key, detail } = apiErrorKey(err);
-    showFlash("error", t(key, { detail }));
+    const message = t(key, { detail });
+    if (key === "toast.cancelled") showFlash("ok", message);
+    else showFlash("error", partial.length ? t("toast.partialError", { error: message }) : message);
   }
 }
 
@@ -870,17 +1181,27 @@ function changeLanguage(code) {
   render();
 }
 
+function openGuest(stay, id, { focus = true } = {}) {
+  expanded.add(id);
+  render();
+  const card = document.querySelector(`[data-guest-card="${id}"]`);
+  if (!card) return;
+  const target = focus ? card.querySelector('[aria-invalid="true"]') || card.querySelector(".guest-body input, .guest-body button") : null;
+  if (target) focusField(target);
+  else card.scrollIntoView({ block: "start", behavior: reducedMotion ? "auto" : "smooth" });
+}
+
 document.addEventListener("click", (e) => {
   const el = e.target.closest("[data-action]");
-  if (!el || el.tagName === "INPUT") return;
+  if (!el || (el.tagName === "INPUT" && el.type !== "button")) return;
   const action = el.dataset.action;
   const stay = view.name === "stay" ? findStay(view.id) : null;
+  const guest = stay && el.dataset.guest ? stay.guests.find((x) => x.id === el.dataset.guest) : null;
 
   switch (action) {
     case "nav":
-      view = { name: el.dataset.view };
-      flash = null;
-      break;
+      go(el.dataset.view);
+      return;
     case "dismiss-flash":
       flash = null;
       break;
@@ -888,7 +1209,8 @@ document.addEventListener("click", (e) => {
       const run = flash?.action?.run;
       flash = null;
       run?.();
-      break;
+      if (!run) break;
+      return;
     }
     case "close-sheet":
       closeSheet();
@@ -897,46 +1219,144 @@ document.addEventListener("click", (e) => {
       const s = { id: uid(), propertyId: state.properties.length === 1 ? state.properties[0].id : "", arrival: today(), departure: "", label: "", guests: [], createdAt: new Date().toISOString(), export: null, report: null };
       state.stays.push(s);
       save();
-      view = { name: "stay", id: s.id };
-      break;
+      go("stay", s.id);
+      return;
     }
     case "open-stay":
-      view = { name: "stay", id: el.dataset.id };
-      flash = null;
-      break;
+      go("stay", el.dataset.id);
+      return;
+    case "jump-section":
+      focusField(document.getElementById(el.dataset.target)?.querySelector("h2"));
+      return;
+    case "set-nights":
+      if (!stay.arrival) return focusField(document.getElementById("in-arrival"));
+      stay.departure = addDays(stay.arrival, Number(el.dataset.n));
+      document.getElementById("in-departure").value = stay.departure;
+      save();
+      refreshStatus();
+      return;
+    case "pick-photos":
+      pickPhotos();
+      return;
+    case "tray-rotate": {
+      const it = tray?.items.find((x) => x.id === el.dataset.id);
+      if (it) it.rotation = (it.rotation + 1) % 4;
+      refreshPhotoArea(stay);
+      return;
+    }
+    case "tray-remove": {
+      const it = tray?.items.find((x) => x.id === el.dataset.id);
+      if (it) {
+        URL.revokeObjectURL(it.url);
+        tray.items = tray.items.filter((x) => x !== it);
+      }
+      if (!tray.items.length) tray = null;
+      refreshPhotoArea(stay);
+      return;
+    }
+    case "tray-cancel":
+      discardTray();
+      refreshPhotoArea(stay);
+      return;
+    case "tray-read":
+      readTray();
+      return;
+    case "cancel-reading":
+      reading?.controller.abort();
+      return;
     case "add-guest": {
       const g = emptyGuest();
       freshGuests.add(g.id);
       stay.guests.push(g);
       noteChange();
       save();
+      openGuest(stay, g.id);
+      return;
+    }
+    case "toggle-guest":
+      if (expanded.has(guest.id)) expanded.delete(guest.id);
+      else expanded.add(guest.id);
       break;
+    case "next-guest": {
+      const next = stay.guests.find((g) => !guestReady(stay, g));
+      if (next) openGuest(stay, next.id);
+      return;
     }
     case "review-guest": {
-      const g = stay.guests.find((x) => x.id === el.dataset.guest);
-      if (g && !guestIssues(g, stay, today()).some((i) => i.level === "error")) g.reviewedFp = guestFingerprint(g);
+      if (hasErrors(stay, guest)) {
+        showAll.add(guest.id);
+        refreshStatus(guest.id);
+        focusField(document.querySelector(`[data-guest-card="${guest.id}"] [aria-invalid="true"]`));
+        return;
+      }
+      guest.reviewedFp = guestFingerprint(guest);
+      save();
+      expanded.delete(guest.id);
+      const next = stay.guests.find((g) => !guestReady(stay, g));
+      if (next) return openGuest(stay, next.id, { focus: false });
+      render();
+      focusField(document.getElementById("report-title"));
+      return;
+    }
+    case "remove-guest": {
+      const index = stay.guests.indexOf(guest);
+      stay.guests.splice(index, 1);
+      noteChange();
+      save();
+      undoable(t("guest.removed", { name: guestName(guest) }), () => {
+        stay.guests.splice(index, 0, guest);
+        save();
+        render();
+      });
+      return;
+    }
+    case "use-address": {
+      const from = stay.guests.find((x) => x.id === el.dataset.from);
+      if (from && guest) guest.address = from.address;
+      document.getElementById(`in-${guest.id}-address`).value = guest.address;
       save();
       refreshStatus();
       return;
     }
-    case "remove-guest": {
-      const g = stay.guests.find((x) => x.id === el.dataset.guest);
-      if (!confirm(t("confirm.removeGuest", { name: guestName(g) }))) return;
-      stay.guests = stay.guests.filter((x) => x.id !== g.id);
-      noteChange();
+    case "address-all": {
+      for (const g of stay.guests) if (!g.address.trim()) g.address = guest.address;
       save();
       break;
     }
-    case "address-from-first": {
-      const g = stay.guests.find((x) => x.id === el.dataset.guest);
-      const first = stay.guests.find((x) => x.address.trim());
-      if (first && g) g.address = first.address;
+    case "pick-country":
+      openSheet({ kind: "country", guestId: el.dataset.guest, query: "" });
+      return;
+    case "choose-country": {
+      const g = stay?.guests.find((x) => x.id === sheet?.guestId);
+      if (g) g.nationality = el.dataset.code;
       save();
-      break;
+      closeSheet();
+      return;
+    }
+    case "view-photo": {
+      const p = photos.get(el.dataset.guest)?.[Number(el.dataset.k)];
+      if (p) openSheet({ kind: "photo", url: p.url, rotation: p.rotation, k: Number(el.dataset.k), zoom: false });
+      return;
+    }
+    case "toggle-zoom":
+      sheet.zoom = !sheet.zoom;
+      document.querySelector(".viewer")?.classList.toggle("zoomed", sheet.zoom);
+      return;
+    case "jump": {
+      if (el.dataset.guest) {
+        showAll.add(el.dataset.guest);
+        return openGuest(stay, el.dataset.guest);
+      }
+      if (el.dataset.target === "settings") return go("settings");
+      const target = document.getElementById(el.dataset.target);
+      focusField(target?.tagName === "SECTION" ? target.querySelector("h2") : target);
+      return;
     }
     case "export": {
       const target = stay || findStay(sheet?.stayId);
-      if (target && !stayIssues(target, findProperty(target.propertyId), today()).length) exportFiles([target]);
+      if (!target) return;
+      if (stayIssues(target, findProperty(target.propertyId), today()).length) return showProblems(target);
+      exportFiles([target]);
       return;
     }
     case "export-all":
@@ -958,40 +1378,52 @@ document.addEventListener("click", (e) => {
       noteChange();
       saveNow();
       sheet = null;
-      view = { name: "stays" };
       flash = { kind: "ok", text: t("toast.reported") };
       confetti();
-      break;
+      go("stays");
+      return;
     }
     case "reopen":
       stay.report = null;
       saveNow();
       break;
-    case "delete-stay":
-      if (!confirm(t("confirm.deleteStay"))) return;
-      state.stays = state.stays.filter((s) => s.id !== stay.id);
+    case "delete-stay": {
+      const index = state.stays.indexOf(stay);
+      state.stays.splice(index, 1);
       noteChange();
       save();
-      view = { name: "stays" };
-      break;
+      flash = { kind: "ok", text: t("stay.deleted"), action: { label: t("toast.undo"), run: () => {
+        state.stays.splice(index, 0, stay);
+        save();
+        go("stay", stay.id);
+      } } };
+      go("stays");
+      return;
+    }
     case "copy-guest-message":
       copy(tIn(el.dataset.lang, "guestMessage"));
       return;
     case "copy":
       copy(el.dataset.text);
       return;
-    case "add-property":
-      state.properties.push(emptyProperty());
+    case "add-property": {
+      const hues = state.properties.map(propertyHue);
+      state.properties.push(emptyProperty((hues.length * 67 + 15) % 360));
       noteChange();
       save();
       break;
+    }
     case "remove-property": {
-      const used = state.stays.some((s) => s.propertyId === el.dataset.id);
-      if (!confirm(t(used ? "confirm.removeUsedApartment" : "confirm.removeApartment"))) return;
-      state.properties = state.properties.filter((p) => p.id !== el.dataset.id);
+      const index = state.properties.findIndex((p) => p.id === el.dataset.id);
+      const [removed] = state.properties.splice(index, 1);
       noteChange();
       save();
-      break;
+      undoable(t("set.apartmentRemoved"), () => {
+        state.properties.splice(index, 0, removed);
+        save();
+        render();
+      });
+      return;
     }
     case "set-theme":
       state.settings.theme = el.dataset.themeId;
@@ -1005,12 +1437,27 @@ document.addEventListener("click", (e) => {
         });
       });
       return;
+    case "open-lang":
+      openSheet({ kind: "lang" });
+      return;
     case "set-lang":
+      sheet = null;
       changeLanguage(el.dataset.lang);
       return;
-    case "cycle-lang": {
-      const codes = Object.keys(LANGS);
-      changeLanguage(codes[(codes.indexOf(getLang()) + 1) % codes.length]);
+    case "save-key": {
+      const key = (sheet.key || "").trim();
+      if (!key) return document.getElementById("sheet-key")?.focus();
+      const pending = sheet.files;
+      state.settings.apiKey = key;
+      saveNow();
+      closeSheet();
+      if (pending) addToTray(pending);
+      else document.getElementById("photo-input").click();
+      return;
+    }
+    case "key-manual": {
+      closeSheet();
+      document.querySelector('[data-action="add-guest"]')?.click();
       return;
     }
     case "backup":
@@ -1020,6 +1467,9 @@ document.addEventListener("click", (e) => {
       state.settings.backupSnoozeUntil = new Date(Date.now() + 3 * DAY).toISOString();
       save();
       break;
+    case "pick-restore":
+      document.getElementById("restore-input").click();
+      return;
     case "restore-confirm": {
       const previous = JSON.stringify(state);
       try {
@@ -1028,14 +1478,11 @@ document.addEventListener("click", (e) => {
       const data = sheet.result.data;
       sheet = null;
       replaceState({ ...data, settings: { ...data.settings, apiKey: state.settings.apiKey } });
-      view = { name: "stays" };
-      showFlash("ok", t("toast.restored"), {
-        label: t("toast.undo"),
-        run: () => {
-          replaceState(JSON.parse(previous));
-          showFlash("ok", t("toast.restoreUndone"));
-        },
+      undoable(t("toast.restored"), () => {
+        replaceState(JSON.parse(previous));
+        showFlash("ok", t("toast.restoreUndone"));
       });
+      go("stays");
       return;
     }
     default:
@@ -1052,12 +1499,16 @@ document.addEventListener("input", (e) => {
     if (el.dataset.sheetField === "method") {
       shownSheet = null;
       renderSheet();
+    } else if (el.dataset.sheetField === "query") {
+      setHtml(document.querySelector('[data-status="country-list"]'), countryOptions(sheet.query));
     } else document.querySelector('[data-action="confirm-report"]')?.toggleAttribute("disabled", !sheet.checked);
     return;
   }
+  let onlyGuest;
   if (el.dataset.guest && el.dataset.field) {
     const g = findStay(view.id)?.guests.find((x) => x.id === el.dataset.guest);
     if (g) g[el.dataset.field] = el.value;
+    onlyGuest = el.dataset.guest;
   } else if (el.dataset.stayField) {
     const s = findStay(view.id);
     if (s) s[el.dataset.stayField] = el.value;
@@ -1068,7 +1519,7 @@ document.addEventListener("input", (e) => {
     state.settings[el.dataset.setting] = el.value.trim();
   } else return;
   save();
-  refreshStatus();
+  refreshStatus(onlyGuest);
 });
 
 document.addEventListener("change", async (e) => {
@@ -1076,7 +1527,7 @@ document.addEventListener("change", async (e) => {
   if (el.dataset.action === "photos") {
     const files = [...el.files];
     el.value = "";
-    await addPhotos(findStay(view.id), files);
+    addToTray(files);
     return;
   }
   if (el.dataset.action === "restore") {
@@ -1099,9 +1550,56 @@ document.addEventListener("change", async (e) => {
   if (el.tagName === "SELECT" || el.type === "date") el.dispatchEvent(new Event("input", { bubbles: true }));
 });
 
+// Errors for a field appear once it has been visited.
+document.addEventListener("focusout", (e) => {
+  const el = e.target;
+  if (!el.dataset?.guest || !el.dataset.field || el.dataset.field === "nationality") return;
+  const key = `${el.dataset.guest}:${el.dataset.field}`;
+  if (touched.has(key)) return;
+  touched.add(key);
+  refreshSoon(el.dataset.guest);
+});
+
+document.addEventListener("pointerdown", () => (pointerDown = true), true);
+const pointerEnd = () => {
+  pointerDown = false;
+  if (refreshPending) {
+    refreshPending = false;
+    setTimeout(() => refreshStatus(), 0);
+  }
+};
+document.addEventListener("pointerup", pointerEnd, true);
+document.addEventListener("pointercancel", pointerEnd, true);
+
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && sheet) closeSheet();
 });
+
+// Photos copied in WhatsApp (or a screenshot) can be pasted straight in, or dropped on a computer.
+document.addEventListener("paste", (e) => {
+  if (view.name !== "stay") return;
+  const files = [...(e.clipboardData?.files || [])];
+  if (!files.length) return;
+  e.preventDefault();
+  addToTray(files);
+});
+document.addEventListener("dragover", (e) => view.name === "stay" && e.dataTransfer?.types.includes("Files") && e.preventDefault());
+document.addEventListener("drop", (e) => {
+  if (view.name !== "stay" || !e.dataTransfer?.files.length) return;
+  e.preventDefault();
+  addToTray([...e.dataTransfer.files]);
+});
+
+addEventListener("popstate", applyRoute);
+// A hash typed into the address bar.
+addEventListener("hashchange", () => viewKey(parseRoute()) !== viewKey(view) && applyRoute());
+
+// Drafts left empty from an earlier visit are cleared on start.
+for (const s of [...state.stays]) if (!(view.name === "stay" && view.id === s.id)) dropIfEmpty(s.id);
+if (view.name === "stay" && !findStay(view.id)) {
+  history.replaceState(null, "", "#/");
+  view = { name: "stays" };
+}
 
 setLang(state.settings.lang || DEFAULT_LANG);
 applyTheme(state.settings.theme);

@@ -49,13 +49,20 @@ Return one entry per distinct person/document. Photos of the front and back of t
 Transcribe; never guess. If a character is unreadable, leave the field empty or keep what is legible and describe it in "problems". Copy the MRZ lines character for character — they are used to verify check digits. Use the Latin-script name from the visual zone (with diacritics, e.g. "Müller", "Nováková"); if the visual zone has only non-Latin script, use the MRZ transliteration.`;
 
 // Scale big phone photos down so requests stay small and fast; MRZ text stays legible at 2000px.
-async function toJpegBase64(file, maxSide = 2000) {
+// rotation is in quarter turns clockwise, as chosen in the photo tray.
+async function toJpegBase64(file, rotation = 0, maxSide = 2000) {
   const bitmap = await createImageBitmap(file);
   const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const w = Math.round(bitmap.width * scale);
+  const h = Math.round(bitmap.height * scale);
+  const turns = ((rotation % 4) + 4) % 4;
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  canvas.width = turns % 2 ? h : w;
+  canvas.height = turns % 2 ? w : h;
+  const ctx = canvas.getContext("2d");
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((turns * Math.PI) / 2);
+  ctx.drawImage(bitmap, -w / 2, -h / 2, w, h);
   bitmap.close();
   const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
   return dataUrl.slice(dataUrl.indexOf(",") + 1);
@@ -102,13 +109,17 @@ function codedError(code) {
   return Object.assign(new Error(code), { code });
 }
 
-export async function readDocuments(files, { apiKey, model, noteLanguage = "English" }) {
-  const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 2 });
+// Photos per request. Smaller batches fail independently and keep earlier results;
+// photos of one ID card should sit next to each other so they share a batch.
+export const BATCH_SIZE = 6;
 
+async function readBatch(client, items, offset, { model, noteLanguage, signal, onProgress, total }) {
   const content = [];
-  for (const [i, file] of files.entries()) {
+  for (const [i, item] of items.entries()) {
+    onProgress?.({ phase: "prepare", i: offset + i + 1, n: total });
     content.push({ type: "text", text: `Image ${i + 1}:` });
-    content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: await toJpegBase64(file) } });
+    content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: await toJpegBase64(item.file, item.rotation) } });
+    if (signal?.aborted) throw codedError("aborted");
   }
   content.push({ type: "text", text: `Extract every identity document in these images. Write "problems" and "unusable_images" in ${noteLanguage}.` });
 
@@ -119,21 +130,50 @@ export async function readDocuments(files, { apiKey, model, noteLanguage = "Engl
     messages: [{ role: "user", content }],
     output_config: { effort: "medium", format: { type: "json_schema", schema: RESPONSE_SCHEMA } },
   };
+  onProgress?.({ phase: "send" });
   // Server-side fallback reruns a declined request on another model (not offered for Haiku).
   const response = model.startsWith("claude-haiku")
-    ? await client.messages.create(request)
-    : await client.beta.messages.create({ ...request, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" });
+    ? await client.messages.create(request, { signal })
+    : await client.beta.messages.create({ ...request, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" }, { signal });
+  onProgress?.({ phase: "check" });
 
   if (response.stop_reason === "refusal") throw codedError("refusal");
   if (response.stop_reason === "max_tokens") throw codedError("truncated");
 
   const text = response.content.filter((b) => b.type === "text").map((b) => b.text).join("");
   const parsed = JSON.parse(text);
-  return { guests: parsed.documents.map(toGuest), unusable: parsed.unusable_images };
+  return {
+    // image_indexes are 1-based within the batch; report them as indexes into all items.
+    guests: parsed.documents.map((doc) => ({ ...toGuest(doc), imageIndexes: doc.image_indexes.map((n) => offset + n - 1).filter((n) => n >= offset && n < offset + items.length) })),
+    unusable: parsed.unusable_images,
+  };
+}
+
+// items: [{ file, rotation }]. Reads them in batches; on failure the error carries
+// the guests found so far (err.partial) so nothing already read is lost.
+export async function readDocuments(items, { apiKey, model, noteLanguage = "English", signal, onProgress }) {
+  const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 2 });
+  const guests = [];
+  const unusable = [];
+  const batches = Math.ceil(items.length / BATCH_SIZE);
+  for (let b = 0; b < batches; b++) {
+    onProgress?.({ phase: "batch", i: b + 1, n: batches });
+    try {
+      const result = await readBatch(client, items.slice(b * BATCH_SIZE, (b + 1) * BATCH_SIZE), b * BATCH_SIZE, { model, noteLanguage, signal, onProgress, total: items.length });
+      guests.push(...result.guests);
+      unusable.push(...result.unusable);
+    } catch (err) {
+      const error = signal?.aborted ? codedError("aborted") : err;
+      error.partial = { guests, unusable };
+      throw error;
+    }
+  }
+  return { guests, unusable };
 }
 
 // Maps a failure to a translation key ("err.*") plus a detail string.
 export function apiErrorKey(err) {
+  if (err?.code === "aborted" || err instanceof Anthropic.APIUserAbortError) return { key: "toast.cancelled" };
   if (err?.code === "refusal") return { key: "err.refusal" };
   if (err?.code === "truncated") return { key: "err.truncated" };
   if (err instanceof Anthropic.AuthenticationError) return { key: "err.auth" };
