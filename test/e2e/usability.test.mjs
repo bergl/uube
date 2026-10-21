@@ -132,7 +132,7 @@ test("no serious accessibility problems in any theme", () =>
         s.settings.theme = th;
         localStorage.setItem("ubyport-helper-v1", JSON.stringify(s));
       }, theme);
-      for (const hash of ["#/", stayHash, "preview", "#/settings"]) {
+      for (const hash of ["#/", stayHash, "preview", "#/settings", "#/help"]) {
         if (hash === "preview") {
           await page.click('[data-action="preview-file"]');
           await page.locator(".preview-card").first().waitFor();
@@ -213,4 +213,28 @@ test("API errors are explained in plain words and can be closed", () =>
     assert.match(await toast.locator(".toast-detail code").innerText(), /400 · invalid_request_error · This API key is not scoped/);
     await toast.locator(".toast-close").click();
     assert.equal(await page.locator(".toast").count(), 0);
+  }));
+
+test("the web-form copy list stays open while copying, and Help shows how to add the app to the Home Screen", () =>
+  withApp({}, async ({ page }) => {
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await addApartment(page);
+    await page.click('.tab[data-view="stays"]');
+    await page.click(".fab-wrap");
+    await page.click('[data-action="add-guest"]');
+    await openCard(page).locator('[data-field="surname"]').fill("Smith");
+    await page.locator("#sec-report details summary").click();
+    const row = page.locator(".copy-row", { hasText: "Příjmení" });
+    const box = await row.boundingBox();
+    assert.ok(box.height < 80, `a copy row is ${box.height}px tall`);
+    await row.click();
+    await page.locator(".toast", { hasText: "Copied" }).waitFor();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "Smith");
+    assert.equal(await page.locator("#sec-report details[open]").count(), 1, "copying doesn't close the list");
+    assert.match(await page.locator(".copy-row.copied").innerText(), /Smith/);
+
+    await page.goto(new URL("#/help", page.url()).href);
+    const guide = page.locator("#home-screen");
+    assert.equal(await guide.locator(".a2hs-slide svg").count(), 4, "every step has a picture");
+    assert.match(await guide.innerText(), /Share[\s\S]*More[\s\S]*Add to Home Screen[\s\S]*separate data/);
   }));

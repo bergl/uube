@@ -18,7 +18,7 @@ Passport photo from WhatsApp → Claude reads the document → you check the det
 - Generates the Ubyport UNL import file (Windows-1250, CRLF), one file per apartment. Characters Ubyport can't accept are flagged before downloading.
 - **Preview** shows the file before downloading, either as readable cards per guest or as the raw file.
 - Finished sections fold into a one-line summary (apartment and dates, guests reviewed). Tap to open them again.
-- Copy buttons for each field, for typing into the Ubyport web form instead.
+- Copy rows for each field, for typing into the Ubyport web form instead. Tap a row to copy it.
 - Ready-made WhatsApp messages asking guests for photos and their home address, in English, Czech and Russian.
 - Leaves out Czech citizens, who are not reported. Guests can also be entered by hand, with no API key.
 - No server. Data stays in the browser, with backup reminders, sharing to iCloud Drive or Files, and checked restore with Undo.
@@ -28,7 +28,7 @@ Passport photo from WhatsApp → Claude reads the document → you check the det
 
 ## Using it
 
-Open the GitHub Pages URL on the phone and choose *Add to Home Screen*. In **Settings**:
+Open the GitHub Pages URL in Safari and add it to the Home Screen: **Share → More → Add to Home Screen**. The Help page shows these steps with pictures. Safari and the Home Screen app keep separate data, so start in the app. In **Settings**:
 
 1. Add each apartment using the details from its Ubyport registration.
 2. Paste an Anthropic API key from [console.anthropic.com](https://console.anthropic.com/settings/keys). The key is stored only on the device. Photos go straight from the phone to the Anthropic API and are not kept by the app.

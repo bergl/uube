@@ -32,6 +32,7 @@ const ICON = {
   rotate: '<svg viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M19 4v4h-4"/></svg>',
   close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   chevron: '<svg viewBox="0 0 24 24"><path d="m9 5.5 6.5 6.5L9 18.5"/></svg>',
+  copy: '<svg viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></svg>',
   eye: '<svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>',
   lock: '<svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>',
 };
@@ -67,6 +68,8 @@ let refreshPending = false;
 let stayRefreshTimer = null;
 let activeTab = null; // tab the highlight currently sits on
 const sectionOpen = new Map(); // "stayId:details" / "stayId:guests" → open?
+const openDetails = new Set(); // <details data-keep="…"> left open, kept across renders
+let copiedKey = null; // the copy row that shows a tick for a moment
 const freshGuests = new Set();
 const photos = new Map(); // guest id → [{ url, rotation }], kept in memory only
 const expanded = new Set(); // guest ids open for editing
@@ -277,11 +280,18 @@ function download(filename, bytes, type) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
-async function copy(text) {
+async function copy(text, key = null) {
   try {
     await navigator.clipboard.writeText(text);
+    copiedKey = key;
     showFlash("ok", t("toast.copied"));
+    if (key) setTimeout(() => {
+      if (copiedKey !== key) return;
+      copiedKey = null;
+      document.querySelectorAll(".copy-row.copied").forEach((row) => row.classList.remove("copied"));
+    }, 1400);
   } catch {
+    copiedKey = null;
     showFlash("error", t("toast.copyFailed"));
   }
 }
@@ -777,7 +787,7 @@ function renderStay(stay) {
     <section class="card" id="sec-report">
       <h2 id="report-title" tabindex="-1"><span class="num">3</span>${t("report.title")}</h2>
       <div data-status="report">${renderReport(stay)}</div>
-      <details><summary>${t("report.manual")}</summary>${renderManualCopy(stay)}</details>
+      <details data-keep="manual-${stay.id}" ${openDetails.has(`manual-${stay.id}`) ? "open" : ""}><summary>${t("report.manual")}</summary><div data-status="manual">${renderManualCopy(stay)}</div></details>
     </section>
     <button class="danger" data-action="delete-stay">${t("stay.delete")}</button>`;
 }
@@ -1058,9 +1068,12 @@ function renderManualCopy(stay) {
         ["Číslo víza", g.visa],
         ["Účel pobytu", `${g.purpose} – ${tIn("cs", "purpose." + g.purpose)}`],
       ];
-      return `<table class="copy-table"><caption>${avatar(g)} ${esc(guestName(g))}</caption>${rows
-        .map(([k, v]) => `<tr><th>${k}</th><td>${esc(v)}</td><td>${v ? `<button class="chip" data-action="copy" data-text="${esc(v)}">${t("copy")}</button>` : ""}</td></tr>`)
-        .join("")}</table>`;
+      return `<div class="copy-list"><p class="copy-guest">${avatar(g)} ${esc(guestName(g))}</p>${rows
+        .map(([k, v]) => v
+          ? `<button class="copy-row ${copiedKey === `${g.id}:${k}` ? "copied" : ""}" data-action="copy" data-key="${esc(`${g.id}:${k}`)}" data-text="${esc(v)}" aria-label="${esc(`${k}: ${v}. ${t("copy")}`)}">
+              <span class="copy-label">${k}</span><span class="copy-value">${esc(v)}</span><span class="copy-icon">${ICON.copy}</span></button>`
+          : `<div class="copy-row empty"><span class="copy-label">${k}</span><span class="copy-value muted">—</span></div>`)
+        .join("")}</div>`;
     })
     .join("");
 }
@@ -1134,16 +1147,75 @@ function renderProperty(p) {
   </details>`;
 }
 
+const isHomeScreenApp = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+
+// Simplified drawings of Safari's screens for the "Add to Home Screen" guide.
+function homeScreenArt(step) {
+  const pill = (x, y, text) => {
+    const w = Math.max(48, text.length * 6.2 + 18);
+    return `<rect x="${x - w / 2}" y="${y}" width="${w}" height="18" rx="9" class="ph-pill"/><text x="${x}" y="${y + 12.5}" text-anchor="middle" class="ph-pill-text">${esc(text)}</text>`;
+  };
+  const tap = (x, y) => `<circle cx="${x}" cy="${y}" r="15" class="ph-ring"/><circle cx="${x}" cy="${y}" r="9" class="ph-tap"/>`;
+  const addWidth = t("a2hs.add").length * 6.4;
+  const sheet = `<rect x="0" y="0" width="200" height="150" class="ph-dim"/><rect x="10" y="16" width="180" height="150" rx="16" class="ph-screen"/>`;
+  const row = (y, w = 90) => `<rect x="22" y="${y}" width="156" height="20" rx="7" class="ph-bg"/><rect x="32" y="${y + 7}" width="${w}" height="6" rx="3" class="ph-bar"/><rect x="160" y="${y + 5}" width="10" height="10" rx="3" class="ph-bar"/>`;
+  const art = [
+    // 1. Safari's toolbar with the Share button.
+    `<rect x="10" y="-20" width="180" height="170" rx="18" class="ph-bg"/>
+     <rect x="22" y="8" width="156" height="34" rx="8" class="ph-soft"/><rect x="22" y="50" width="120" height="6" rx="3" class="ph-bar"/><rect x="22" y="62" width="96" height="6" rx="3" class="ph-bar"/>
+     <rect x="10" y="104" width="180" height="46" class="ph-screen"/>
+     <path d="M34 120l-6 6 6 6M62 120l6 6-6 6" class="ph-icon"/>
+     <path d="M95 121h-3v12h16v-12h-3M100 129v-14M96 118.5l4-4 4 4" class="ph-icon"/>
+     <path d="M130 120h12v13h-12zM136 120v13" class="ph-icon"/><path d="M162 121h9v9M159 124h9v9h-9z" class="ph-icon"/>
+     ${tap(100, 125)}${pill(100, 80, t("a2hs.share"))}`,
+    // 2. The share sheet, with More at the bottom.
+    `${sheet}<rect x="24" y="28" width="18" height="18" rx="5" class="ph-soft"/><rect x="48" y="30" width="70" height="6" rx="3" class="ph-bar"/><rect x="48" y="40" width="46" height="4" rx="2" class="ph-bar"/>
+     ${[36, 70, 104, 138, 172].map((x) => `<circle cx="${x}" cy="66" r="10" class="ph-soft"/>`).join("")}
+     ${row(86, 70)}
+     <rect x="22" y="112" width="156" height="24" rx="8" class="ph-hl"/><text x="34" y="128" class="ph-text">${esc(t("a2hs.more"))}</text><path d="M163 119l5 5-5 5" class="ph-icon"/>
+     ${tap(150, 124)}`,
+    // 3. The list of actions with Add to Home Screen.
+    `${sheet}${row(26, 80)}${row(50, 104)}
+     <rect x="22" y="74" width="156" height="24" rx="8" class="ph-hl"/><text x="34" y="90" class="ph-text">${esc(t("a2hs.addHome"))}</text>
+     <path d="M160 79h12v13h-12zM166 82.5v6M163 85.5h6" class="ph-icon"/>
+     ${row(102, 64)}${tap(166, 85.5)}`,
+    // 4. The confirmation with the app icon and Add.
+    `${sheet}<text x="26" y="38" class="ph-muted">${esc(t("a2hs.cancel"))}</text>
+     <rect x="${170 - addWidth}" y="25" width="${addWidth + 12}" height="18" rx="9" class="ph-hl"/><text x="176" y="38" text-anchor="end" class="ph-text ph-accent">${esc(t("a2hs.add"))}</text>
+     <clipPath id="ph-icon-clip"><rect x="26" y="52" width="38" height="38" rx="9"/></clipPath>
+     <image href="icons/apple-touch-icon.png" x="26" y="52" width="38" height="38" clip-path="url(#ph-icon-clip)"/>
+     <text x="74" y="68" class="ph-text">Ubyport</text><rect x="74" y="76" width="84" height="5" rx="2.5" class="ph-bar"/>
+     <rect x="26" y="108" width="96" height="6" rx="3" class="ph-bar"/><rect x="144" y="102" width="32" height="19" rx="9.5" class="ph-toggle"/><circle cx="166.5" cy="111.5" r="7.5" class="ph-knob"/>
+     <circle cx="${176 - addWidth / 2}" cy="34" r="9" class="ph-tap"/>`,
+  ][step];
+  return `<svg class="ph-art" viewBox="0 0 200 150" aria-hidden="true" focusable="false">${art}</svg>`;
+}
+
+function renderHomeScreenGuide() {
+  const installed = isHomeScreenApp();
+  const slides = [1, 2, 3, 4].map((n, i) => `<li class="a2hs-slide">${homeScreenArt(i)}<p><span class="num">${n}</span><span>${t(`a2hs.s${n}`)}</span></p></li>`).join("");
+  const guide = `<p class="muted small a2hs-hint">${t("a2hs.swipe")}</p>
+    <div class="a2hs-scroller" tabindex="0" role="region" aria-label="${t("a2hs.steps")}"><ol class="a2hs-slides">${slides}</ol></div>
+    <p class="sheet-warn small">${t("a2hs.data")}</p>
+    <p class="muted small">${t("a2hs.android")}</p>`;
+  return `<section class="card prose a2hs" id="home-screen">
+    <h2>📲 ${t("a2hs.title")}</h2>
+    ${installed ? `<p class="pill ok">${t("a2hs.installed")}</p><details><summary>${t("a2hs.how")}</summary>${guide}</details>` : `<p class="muted">${t("a2hs.intro")}</p>${guide}`}
+  </section>`;
+}
+
 function renderHelp() {
   const steps = ["📱", "📷", "🔍", "⬆️", "🎉"];
-  return `
+  const homeScreen = renderHomeScreenGuide();
+  return `${isHomeScreenApp() ? "" : homeScreen}
   <section class="card prose">
     <ol class="help-steps">${steps.map((icon, i) => `<li style="--i:${i}"><span class="help-icon">${icon}</span><span>${t(`help.s${i + 1}`)}</span></li>`).join("")}</ol>
   </section>
   <section class="card prose">
     <h2>💡 ${t("help.rules")}</h2>
     <ul>${[1, 2, 3].map((i) => `<li>${t(`help.r${i}`)}</li>`).join("")}</ul>
-  </section>`;
+  </section>
+  ${isHomeScreenApp() ? homeScreen : ""}`;
 }
 
 // Replaces markup only when it changed, so a button about to be tapped isn't swapped out.
@@ -1178,6 +1250,7 @@ function refreshStatus(onlyGuest) {
     setHtml(document.querySelector('[data-status="deadline"]'), renderDeadline(stay));
     setHtml(document.querySelector('[data-status="stepper"]'), renderStepper(stay));
     setHtml(document.querySelector('[data-status="guest-summary"]'), renderGuestSummary(stay));
+    setHtml(document.querySelector('[data-status="manual"]'), renderManualCopy(stay));
     setHtml(document.querySelector('[data-status="head-details"]'), renderSectionHead(stay, "details"));
     setHtml(document.querySelector('[data-status="head-guests"]'), renderSectionHead(stay, "guests"));
     setHtml(document.getElementById("hero-text"), renderHeroText());
@@ -1358,6 +1431,12 @@ function openGuest(stay, id, { focus = true } = {}) {
   if (target) focusField(target);
   else card.scrollIntoView({ block: "start", behavior: reducedMotion ? "auto" : "smooth" });
 }
+
+// "toggle" doesn't bubble, so listen while it travels down.
+document.addEventListener("toggle", (e) => {
+  const key = e.target.dataset?.keep;
+  if (key) e.target.open ? openDetails.add(key) : openDetails.delete(key);
+}, true);
 
 document.addEventListener("click", (e) => {
   const el = e.target.closest("[data-action]");
@@ -1592,7 +1671,7 @@ document.addEventListener("click", (e) => {
       copy(tIn(el.dataset.lang, "guestMessage"));
       return;
     case "copy":
-      copy(el.dataset.text);
+      copy(el.dataset.text, el.dataset.key);
       return;
     case "add-property": {
       const hues = state.properties.map(propertyHue);
