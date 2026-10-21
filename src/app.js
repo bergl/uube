@@ -290,11 +290,13 @@ function mountShell() {
   document.getElementById("app").innerHTML = `
     <header class="hero">
       ${skylineSvg()}
-      <div class="hero-tools">
-        <button class="hero-btn" data-action="open-lang" aria-label="${esc(t("nav.language"))}">${ICON.globe}<span id="lang-label"></span></button>
-        <button class="hero-btn" data-action="nav" data-view="help" aria-label="${esc(t("nav.help"))}">${ICON.help}</button>
+      <div class="hero-head">
+        <div class="hero-tools">
+          <button class="hero-btn" data-action="open-lang" aria-label="${esc(t("nav.language"))}">${ICON.globe}<span id="lang-label"></span></button>
+          <button class="hero-btn" data-action="nav" data-view="help" aria-label="${esc(t("nav.help"))}">${ICON.help}</button>
+        </div>
+        <div class="hero-text" id="hero-text"></div>
       </div>
-      <div class="hero-text" id="hero-text"></div>
     </header>
     <div id="toast-layer" aria-live="polite"></div>
     <main id="view"></main>
@@ -365,7 +367,7 @@ function renderHeroText() {
     const next = open.map((s) => (s.arrival ? reportDeadline(s.arrival) : null)).filter(Boolean).sort()[0];
     line = t("hero.toReport", { n: open.length }) + (next ? ` · ${t("hero.nextDue", { date: niceDate(next) })}` : "");
   }
-  return `<h1 tabindex="-1">${greeting()} <span class="wave">👋</span></h1><p>${esc(line)}</p>`;
+  return `<h1 tabindex="-1">${greeting()}&nbsp;<span class="wave">👋</span></h1><p>${esc(line)}</p>`;
 }
 
 function renderTabbar() {

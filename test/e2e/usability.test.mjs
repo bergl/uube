@@ -146,3 +146,46 @@ test("no serious accessibility problems in any theme", () =>
     }
     assert.deepEqual(problems, []);
   }));
+
+test("header text never overlaps the skyline or the header buttons", () =>
+  withApp({}, async ({ page }) => {
+    await addApartment(page);
+    await page.click(".fab-wrap");
+    await page.click('[data-action="add-guest"]');
+    const stayHash = new URL(page.url()).hash;
+    const problems = [];
+    for (const width of [320, 390, 1280]) {
+      await page.setViewportSize({ width, height: 800 });
+      for (const lang of ["ru", "cs", "en"]) {
+        await page.evaluate((l) => {
+          const s = JSON.parse(localStorage.getItem("ubyport-helper-v1"));
+          s.settings.lang = l;
+          localStorage.setItem("ubyport-helper-v1", JSON.stringify(s));
+        }, lang);
+        for (const hash of ["#/", stayHash, "#/settings", "#/help"]) {
+          await page.goto(new URL(hash, page.url()).href);
+          await page.reload();
+          const result = await page.evaluate(() => {
+            const text = document.getElementById("hero-text").getBoundingClientRect();
+            const scene = document.querySelector(".hero > .scene").getBoundingClientRect();
+            const tools = document.querySelector(".hero-tools").getBoundingClientRect();
+            // Measure the rendered lines of text, not the boxes of the headings that contain them.
+            const lines = [];
+            const walker = document.createTreeWalker(document.getElementById("hero-text"), NodeFilter.SHOW_TEXT);
+            for (let node; (node = walker.nextNode()); ) {
+              const range = document.createRange();
+              range.selectNodeContents(node);
+              lines.push(...[...range.getClientRects()].filter((r) => r.width > 0));
+            }
+            return {
+              belowText: Math.round(scene.top - text.bottom),
+              underTools: lines.some((r) => r.right > tools.left + 1 && r.top < tools.bottom - 1 && r.bottom > tools.top + 1),
+            };
+          });
+          if (result.belowText < -6) problems.push(`${width}px ${lang} ${hash.slice(0, 8)}: text runs ${-result.belowText}px into the skyline`);
+          if (result.underTools) problems.push(`${width}px ${lang} ${hash.slice(0, 8)}: text runs under the header buttons`);
+        }
+      }
+    }
+    assert.deepEqual(problems, []);
+  }));

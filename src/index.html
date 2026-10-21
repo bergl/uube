@@ -111,11 +111,14 @@
   .hint { margin: 6px 0 0; }
 
   /* ---------------------------------------------------------------- hero */
+  /* The header text sits above the skyline in normal flow, so a longer greeting
+     (or a larger system text size) makes the header taller instead of overlapping the towers. */
   .hero {
-    position: relative; overflow: hidden; height: calc(200px + env(safe-area-inset-top));
+    position: relative; overflow: hidden; display: flex; flex-direction: column;
     background: linear-gradient(180deg, var(--sky-1) 0%, var(--sky-2) 62%, var(--sky-3) 100%);
-    transition: background .5s, height .3s ease;
+    transition: background .5s;
   }
+  .hero > .scene { order: 2; position: relative; inset: auto; height: auto; aspect-ratio: 400 / 120; flex-shrink: 0; margin-top: -4px; }
   .hero.paused * { animation-play-state: paused !important; }
   .scene { position: absolute; inset: auto 0 0 0; width: 100%; height: 66%; display: block; stroke: none; overflow: visible; }
   .scene .far { fill: var(--far); transition: fill .5s; }
@@ -141,21 +144,21 @@
      and the skyline keeps its proportions instead of being cropped into giant blocks. */
   @media (min-width: 700px) {
     body { display: flow-root; } /* keeps the banner's top margin from exposing the root background above it */
-    .hero { max-width: 608px; height: 250px; margin: 16px auto 0; border-radius: 28px; box-shadow: 0 18px 40px -22px rgba(0,0,0,.35); }
-    .hero > .scene { height: 182px; }
+    .hero { max-width: 608px; margin: 16px auto 0; border-radius: 28px; box-shadow: 0 18px 40px -22px rgba(0,0,0,.35); }
   }
   @media (max-width: 699px) {
-    .hero.compact { height: calc(132px + env(safe-area-inset-top)); }
-    .hero.compact > .scene { height: 56%; }
-    .hero.compact .hero-text { top: calc(14px + env(safe-area-inset-top)); }
+    .hero.compact > .scene { aspect-ratio: auto; height: 72px; }
+    .hero.compact .hero-head { padding-top: calc(12px + env(safe-area-inset-top)); }
     .hero.compact .hero-text h1 { font-size: 1.3rem; }
     .hero.compact .hero-text p { font-size: .84rem; margin-top: 3px; }
   }
-  .hero-text { text-shadow: var(--hero-shadow); position: absolute; left: 0; right: 0; top: calc(18px + env(safe-area-inset-top)); padding: 0 20px; max-width: 640px; margin: 0 auto; color: var(--hero-text); }
-  .hero-text h1 { margin: 0; font-size: 1.75rem; font-weight: 800; line-height: 1.15; padding-right: 116px; outline: none; }
+  /* The buttons float, so every line of the greeting wraps around them instead of running underneath. */
+  .hero-head { position: relative; z-index: 2; width: 100%; max-width: 640px; margin: 0 auto; padding: calc(16px + env(safe-area-inset-top)) 16px 2px 20px; }
+  .hero-text { text-shadow: var(--hero-shadow); color: var(--hero-text); }
+  .hero-text h1 { margin: 0; padding-top: 2px; font-size: clamp(1.4rem, 6.2vw, 1.75rem); font-weight: 800; line-height: 1.15; outline: none; }
   .hero-text p { margin: 6px 0 0; font-weight: 700; font-size: .92rem; }
   .wave { display: inline-block; transform-origin: 70% 80%; animation: wave 2.4s ease-in-out 1; }
-  .hero-tools { position: absolute; z-index: 2; top: calc(14px + env(safe-area-inset-top)); right: 14px; display: flex; gap: 8px; }
+  .hero-tools { float: right; display: flex; gap: 8px; margin: 0 0 6px 12px; }
   .hero-btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 44px; min-width: 44px; padding: 0 12px; border-radius: 999px; border: 0;
     background: color-mix(in srgb, var(--card) 85%, transparent); color: var(--text); font: inherit; font-size: .85rem; font-weight: 700;
