@@ -5,11 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
 <!-- Guest data may only ever leave the device towards the Anthropic API. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src https://api.anthropic.com; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; manifest-src 'self'; connect-src https://api.anthropic.com; form-action 'none'; base-uri 'none'; object-src 'none'">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Ubyport">
 <meta name="theme-color" content="#8fbcd4">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
 <title>Ubyport Helper</title>
 <style>
   /* ---------------------------------------------------------------- themes */
@@ -334,6 +337,45 @@
   .help-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 14px; background: var(--accent-soft); font-size: 1.2rem; flex-shrink: 0; }
   .prose ul { padding-left: 20px; margin: 0; } .prose li { margin: 6px 0; }
 
+  /* ---------------------------------------------------------------- workflow states */
+  .pills { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+  .banner { margin: 0 0 12px; padding: 10px 12px; border-radius: 12px; font-weight: 650; font-size: .9rem; }
+  .banner.warn { background: var(--warn-bg); color: var(--warn); }
+  .banner.bad { background: var(--bad-bg); color: var(--bad); }
+  .still { margin: 12px 0 0; font-weight: 750; font-size: .88rem; }
+  .still + ul { margin-top: 6px; }
+  .review { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-top: 12px; }
+  .review button { margin: 0; }
+  .reviewed { display: flex; align-items: center; gap: 6px; margin: 12px 0 0; color: var(--ok); font-weight: 700; font-size: .9rem; }
+  .reviewed svg { stroke-width: 3; width: 16px; height: 16px; }
+  .save-status { display: inline-flex; align-items: center; gap: 4px; font-size: .78rem !important; opacity: .8; }
+  .save-status svg { width: 13px; height: 13px; stroke-width: 3; }
+  .reminder h2 svg, .backup-status + .row-buttons svg { color: var(--accent); }
+  .reminder p { margin: 0; }
+  .backup-status { margin: 10px 0 0; }
+
+  /* ---------------------------------------------------------------- sheets (in-app dialogs) */
+  #sheet-layer { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
+  .sheet-backdrop { position: absolute; inset: 0; background: rgba(10,12,20,.45); pointer-events: auto; animation: fade .2s ease both; }
+  .sheet {
+    position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); width: min(560px, 100%); max-height: 88vh; overflow: auto; pointer-events: auto;
+    background: var(--card); color: var(--text); border-radius: 24px 24px 0 0; padding: 20px 20px calc(20px + env(safe-area-inset-bottom));
+    box-shadow: 0 -10px 40px rgba(0,0,0,.25); animation: slideup .3s cubic-bezier(.2,.9,.3,1) both;
+  }
+  @media (min-width: 700px) { .sheet { bottom: auto; top: 50%; transform: translate(-50%, -50%); border-radius: 24px; padding-bottom: 20px; } }
+  .sheet h2 { font-size: 1.2rem; }
+  .sheet p { margin: 8px 0; }
+  .sheet-warn { padding: 10px 12px; border-radius: 12px; background: var(--warn-bg); color: var(--warn); font-size: .9rem; }
+  .sheet-warn .chip { margin-top: 8px; }
+  .sheet-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+  .sheet-actions button { margin: 0; }
+  fieldset.choice { border: 0; padding: 0; margin: 0; }
+  fieldset.choice legend { font-size: .82rem; font-weight: 650; color: var(--muted); margin-bottom: 4px; }
+  label.radio, label.check { display: flex; align-items: center; gap: 10px; min-height: 44px; margin: 4px 0; color: var(--text); font-size: 1rem; font-weight: 600; }
+  label.radio input, label.check input { width: 22px; height: 22px; margin: 0; flex-shrink: 0; accent-color: var(--accent); }
+  @keyframes fade { from { opacity: 0; } }
+  @keyframes slideup { from { transform: translate(-50%, 40px); opacity: 0; } }
+
   /* ---------------------------------------------------------------- tab bar, toast, confetti */
   .tabbar {
     position: fixed; z-index: 10; left: 50%; transform: translateX(-50%); bottom: calc(12px + env(safe-area-inset-bottom));
@@ -350,8 +392,10 @@
   .fab:active svg { transform: rotate(90deg); }
 
   #toast-layer { position: fixed; z-index: 20; left: 0; right: 0; top: calc(12px + env(safe-area-inset-top)); display: grid; justify-items: center; pointer-events: none; padding: 0 16px; }
-  .toast { pointer-events: auto; display: flex; align-items: center; gap: 10px; max-width: 520px; padding: 12px 16px; border-radius: 18px; font-weight: 650; cursor: pointer;
+  .toast { pointer-events: auto; display: flex; align-items: center; gap: 10px; max-width: 520px; padding: 12px 16px; border-radius: 18px; font-weight: 650;
     background: var(--card); color: var(--text); border: 1px solid var(--line); box-shadow: 0 14px 34px -10px rgba(0,0,0,.35); animation: drop .45s cubic-bezier(.2,1.4,.4,1) both; }
+  .toast-text { cursor: pointer; }
+  .toast-action { margin: 0 0 0 4px; padding: 8px 14px; min-height: 40px; border-radius: 12px; background: var(--accent-soft); color: var(--accent); border-color: transparent; white-space: nowrap; }
   .toast.leaving { animation: lift .35s ease both; }
   .toast-icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0; font-weight: 900; }
   .toast.ok .toast-icon { background: var(--ok); color: #fff; } .toast.ok .toast-icon svg { width: 15px; height: 15px; stroke-width: 3; }

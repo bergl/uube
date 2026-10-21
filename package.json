@@ -6,8 +6,9 @@
     "test": "test"
   },
   "scripts": {
-    "build": "node build.mjs",
-    "test": "node --test test/*.test.mjs"
+    "build": "node build.mjs --root",
+    "test": "node --test test/unit/*.test.mjs",
+    "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.mjs"
   },
   "author": "",
   "license": "ISC",
@@ -15,7 +16,9 @@
     "@anthropic-ai/sdk": "0.131.0"
   },
   "devDependencies": {
-    "esbuild": "0.25.10"
+    "axe-core": "4.10.3",
+    "esbuild": "0.25.10",
+    "playwright": "1.56.1"
   },
   "type": "module",
   "private": true

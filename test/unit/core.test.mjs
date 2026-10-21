@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildUnl, encodeCp1250, guestLine } from "../src/unl.js";
-import { parseMrz } from "../src/mrz.js";
-import { reportDeadline } from "../src/deadline.js";
+import { buildUnl, encodeCp1250, guestLine } from "../../src/unl.js";
+import { parseMrz } from "../../src/mrz.js";
+import { reportDeadline } from "../../src/deadline.js";
 
 test("UNL output matches the reference library's fixture", () => {
   const property = {

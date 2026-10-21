@@ -4,13 +4,15 @@ import { reportDeadline } from "./deadline.js";
 import { apiErrorKey, readDocuments } from "./extract.js";
 import { DEFAULT_LANG, LANGS, getLang, locale, setLang, t, tIn } from "./i18n.js";
 import { skylineSvg } from "./scenery.js";
-import { DEFAULT_THEME, THEMES, applyTheme } from "./themes.js";
+import { BEFORE_RESTORE_KEY, backupPayload, createSaver, load, requestPersistence, validateBackup } from "./store.js";
+import { THEMES, applyTheme } from "./themes.js";
 import { PURPOSE_CODES, buildUnl, czDate, encodeCp1250, unlFileName } from "./unl.js";
+import { guestFingerprint, guestIssues, isReviewed, mrzState, propertyIssues, stayFingerprint, stayIssues, stayLossy, stayStage } from "./validate.js";
 
-const STORAGE_KEY = "ubyport-helper-v1";
 const UBYPORT_URL = "https://ubyport.policie.cz/";
 const MODELS = { "claude-opus-5-5": "model.opus", "claude-sonnet-5-5": "model.sonnet", "claude-haiku-5-5": "model.haiku" };
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const DAY = 86400000;
 
 const ICON = {
   home: '<svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/><path d="M10 19.5v-5h4v5"/></svg>',
@@ -22,6 +24,7 @@ const ICON = {
   download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/></svg>',
   chat: '<svg viewBox="0 0 24 24"><path d="M4 18.5V6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H8.5z"/></svg>',
   back: '<svg viewBox="0 0 24 24"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg>',
+  shield: '<svg viewBox="0 0 24 24"><path d="M12 3 5 6v5.5c0 4.2 2.9 7.9 7 9.5 4.1-1.6 7-5.3 7-9.5V6z"/></svg>',
 };
 
 // ---------------------------------------------------------------- state
@@ -34,43 +37,43 @@ const emptyProperty = () => ({
 const emptyGuest = () => ({
   id: uid(), surname: "", givenNames: "", birthDate: "", sex: "", nationality: "", documentType: "passport",
   documentNumber: "", issuingCountry: "", expiryDate: "", visa: "", address: "", purpose: "10", note: "",
-  mrz: null, readerProblems: "",
+  mrz: null, mrzLines: [], readerProblems: "", reviewedFp: "",
 });
-
-const defaultSettings = () => ({ apiKey: "", model: "claude-opus-5-5", theme: DEFAULT_THEME, lang: "" });
 
 let state = load();
 let view = { name: "stays" };
 let busy = null; // { stayId }
-let flash = null; // { kind, text }
+let flash = null; // { kind, text, action?: { label, run } }
+let sheet = null; // in-app dialog, see renderSheet()
 let lastViewKey = null;
 let shownFlash = null;
+let shownSheet = null;
 let toastTimer = null;
 let scanTimer = null;
+let saveStatus = "saved";
+let storageMode = "unsupported";
 const freshGuests = new Set();
+
+const saver = createSaver(() => state, (status, err) => {
+  saveStatus = status;
+  const el = document.getElementById("save-status");
+  if (el) el.innerHTML = renderSaveStatus();
+  if (status === "error") showFlash("error", t("toast.saveFailed", { msg: err?.message || "" }));
+});
+const save = () => saver.soon();
+const saveNow = () => saver.now();
 
 function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
 
-function load() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (saved) return { properties: [], stays: [], ...saved, settings: { ...defaultSettings(), ...saved.settings } };
-  } catch {}
-  return { settings: defaultSettings(), properties: [], stays: [] };
-}
-
-function save() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch (e) {
-    showFlash("error", t("toast.saveFailed", { msg: e.message }));
-  }
-}
-
 const findStay = (id) => state.stays.find((s) => s.id === id);
 const findProperty = (id) => state.properties.find((p) => p.id === id);
+
+// Counts work that a backup doesn't cover yet, for the backup reminder.
+function noteChange() {
+  state.settings.changesSinceBackup = (state.settings.changesSinceBackup || 0) + 1;
+}
 
 // ---------------------------------------------------------------- helpers
 
@@ -84,13 +87,15 @@ function today() {
 }
 
 function daysBetween(fromIso, toIso) {
-  return Math.round((Date.parse(toIso) - Date.parse(fromIso)) / 86400000);
+  return Math.round((Date.parse(toIso) - Date.parse(fromIso)) / DAY);
 }
 
 function niceDate(iso) {
   if (!iso) return "—";
   return new Date(iso + "T12:00:00").toLocaleDateString(locale(), { weekday: "short", day: "numeric", month: "short" });
 }
+
+const niceDateTime = (iso) => new Date(iso).toLocaleString(locale(), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
 function guestName(g) {
   return [g.givenNames, g.surname].filter(Boolean).join(" ") || t("guest.unnamed");
@@ -113,8 +118,8 @@ function avatar(g) {
   return `<span class="avatar" style="--h:${hue}" aria-hidden="true">${esc(initials)}</span>`;
 }
 
-function showFlash(kind, text) {
-  flash = { kind, text };
+function showFlash(kind, text, action) {
+  flash = { kind, text, action };
   render();
 }
 
@@ -123,58 +128,40 @@ function greeting() {
   return t(h < 5 ? "greet.night" : h < 11 ? "greet.morning" : h < 18 ? "greet.day" : h < 23 ? "greet.evening" : "greet.night");
 }
 
-// Errors block the export; warnings only ask for a second look.
-function checkGuest(g, stay) {
-  const errors = [];
-  const warnings = [];
-  if (!g.surname.trim()) errors.push(t("v.surname"));
-  if (!g.givenNames.trim()) warnings.push(t("v.givenNames"));
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(g.birthDate)) errors.push(t("v.birthMissing"));
-  else if (g.birthDate > today()) errors.push(t("v.birthFuture"));
-  if (!g.nationality) errors.push(t("v.nationalityMissing"));
-  else if (!COUNTRIES[g.nationality]) errors.push(t("v.nationalityUnknown", { code: g.nationality }));
-  if (g.nationality === "CZE") errors.push(t("v.czech"));
-  const doc = g.documentNumber.trim();
-  if (!doc) errors.push(t("v.docMissing"));
-  else if (doc.length < 4 || doc.length > 30) errors.push(t("v.docLength"));
-  if (!g.address.trim()) errors.push(t("v.address"));
-  if (g.mrz && !g.mrz.valid) warnings.push(t("v.mrzFailed"));
-  const fixes = (g.mrz?.mismatches || []).filter((m) => typeof m === "object");
-  if (fixes.length) warnings.push(t("v.corrected", { list: fixes.map((m) => `${t("m." + m.field)} “${m.from}” → “${m.to}”`).join("; ") }));
-  if (g.expiryDate && stay?.arrival && g.expiryDate < stay.arrival) warnings.push(t("v.expired"));
-  if (g.readerProblems) warnings.push(t("v.readerNote", { note: g.readerProblems }));
-  return { errors, warnings };
+const FIELD_LABEL = {
+  surname: "f.surname", givenNames: "f.givenNames", birthDate: "f.birthDate", nationality: "f.nationality",
+  documentNumber: "f.documentNumber", address: "f.address", note: "f.note",
+};
+
+function issueText(issue) {
+  const text = esc(t("v." + issue.code, issue.params || {}));
+  return issue.field && FIELD_LABEL[issue.field] && issue.level === "warn" ? `<b>${t(FIELD_LABEL[issue.field])}:</b> ${text}` : text;
 }
 
-function checkStay(stay) {
-  const errors = [];
-  const property = findProperty(stay.propertyId);
-  if (!property) errors.push(t("s.chooseProperty"));
-  else if (!property.idub.trim()) errors.push(t("s.noIdub", { name: property.label || property.name }));
-  if (!stay.arrival || !stay.departure) errors.push(t("s.dates"));
-  else if (stay.departure < stay.arrival) errors.push(t("s.datesOrder"));
-  if (!stay.guests.length) errors.push(t("s.noGuests"));
-  const badGuests = stay.guests.filter((g) => checkGuest(g, stay).errors.length).length;
-  if (badGuests) errors.push(t("s.badGuests", { n: badGuests }));
-  return errors;
-}
+const stageOf = (stay) => stayStage(stay, findProperty(stay.propertyId), today());
+const isOpen = (stay) => stageOf(stay) !== "reported";
+const currentFp = (stay) => {
+  const p = findProperty(stay.propertyId);
+  return p ? stayFingerprint(stay, p) : "";
+};
 
-function stayStatus(stay) {
-  if (stay.submittedAt) return { cls: "ok", text: t("status.reported") };
-  const deadline = stay.arrival ? reportDeadline(stay.arrival) : null;
-  const left = deadline ? daysBetween(today(), deadline) : null;
-  if (stay.exportedAt) return { cls: left !== null && left < 0 ? "bad" : "info", text: t("status.fileReady") };
-  if (left === null) return { cls: "muted", text: t("status.draft") };
+const STAGE_CLASS = { draft: "muted", review: "warn", ready: "info", exported: "info", changed: "warn", reported: "ok", changedAfterReport: "bad" };
+
+function deadlineInfo(stay) {
+  if (!stay.arrival || stageOf(stay) === "reported") return null;
+  const left = daysBetween(today(), reportDeadline(stay.arrival));
   if (left < 0) return { cls: "bad", text: t("status.overdue", { n: -left }) };
   if (left === 0) return { cls: "bad", text: t("status.dueToday") };
   return { cls: left === 1 ? "warn" : "calm", text: t("status.dueIn", { n: left }) };
 }
 
 function stayProgress(stay) {
-  const property = findProperty(stay.propertyId);
-  const details = !!property && !!stay.arrival && !!stay.departure && stay.departure >= stay.arrival;
-  const guests = stay.guests.length > 0 && stay.guests.every((g) => !checkGuest(g, stay).errors.length);
-  return [details, guests, !!stay.exportedAt, !!stay.submittedAt];
+  const issues = stayIssues(stay, findProperty(stay.propertyId), today());
+  const stage = stageOf(stay);
+  const details = !issues.some((i) => ["chooseProperty", "noIdub", "dates", "datesInvalid", "datesOrder"].includes(i.code));
+  const guests = stay.guests.length > 0 && !issues.some((i) => ["badGuests", "unreviewed", "noGuests"].includes(i.code));
+  const file = !!stay.export && stay.export.fp === currentFp(stay);
+  return [details, guests, file || stage === "reported", stage === "reported"];
 }
 
 function download(filename, bytes, type) {
@@ -232,7 +219,8 @@ function mountShell() {
     </header>
     <div id="toast-layer" aria-live="polite"></div>
     <main id="view"></main>
-    <nav class="tabbar" id="tabbar"></nav>`;
+    <nav class="tabbar" id="tabbar"></nav>
+    <div id="sheet-layer"></div>`;
 }
 
 function render() {
@@ -257,21 +245,27 @@ function render() {
     render.enterTimer = setTimeout(() => [main, heroText].forEach((el) => el.classList.remove("enter")), 900);
   }
   renderToast();
+  renderSheet();
   freshGuests.clear();
   syncScanner();
 }
 
+function renderSaveStatus() {
+  return saveStatus === "error" ? `⚠ ${t("save.error")}` : saveStatus === "saving" ? t("save.saving") : `${ICON.check}${t("save.saved")}`;
+}
+
 function renderHeroText() {
+  const saved = `<p class="save-status" id="save-status" aria-live="polite">${renderSaveStatus()}</p>`;
   if (view.name === "stay") {
     const stay = findStay(view.id);
     if (!stay) return "";
     const p = findProperty(stay.propertyId);
     return `<h1>${esc(p?.label || p?.name || t("hero.newStay"))}</h1>
-      <p>${niceDate(stay.arrival)} → ${niceDate(stay.departure)} · ${t("hero.guests", { n: stay.guests.length })}</p>`;
+      <p>${niceDate(stay.arrival)} → ${niceDate(stay.departure)} · ${t("hero.guests", { n: stay.guests.length })}</p>${saved}`;
   }
-  if (view.name === "settings") return `<h1>${t("settings.title")}</h1><p>${t("settings.subtitle")}</p>`;
+  if (view.name === "settings") return `<h1>${t("settings.title")}</h1><p>${t("settings.subtitle")}</p>${saved}`;
   if (view.name === "help") return `<h1>${t("help.title")}</h1><p>${t("help.subtitle")}</p>`;
-  const open = state.stays.filter((s) => !s.submittedAt);
+  const open = state.stays.filter(isOpen);
   let line;
   if (!state.properties.length || !state.settings.apiKey) line = t("hero.setup");
   else if (!open.length) line = t("hero.allDone");
@@ -299,8 +293,9 @@ function renderToast() {
     layer.innerHTML = "";
     return;
   }
-  layer.innerHTML = `<div class="toast ${flash.kind}" data-action="dismiss-flash" role="status">
-    <span class="toast-icon">${flash.kind === "ok" ? ICON.check : "!"}</span><span>${esc(flash.text)}</span></div>`;
+  layer.innerHTML = `<div class="toast ${flash.kind}" role="status">
+    <span class="toast-icon">${flash.kind === "ok" ? ICON.check : "!"}</span><span class="toast-text" data-action="dismiss-flash">${esc(flash.text)}</span>
+    ${flash.action ? `<button class="toast-action" data-action="toast-action">${esc(flash.action.label)}</button>` : ""}</div>`;
   if (flash.kind === "ok") {
     const mine = flash;
     toastTimer = setTimeout(() => {
@@ -311,7 +306,7 @@ function renderToast() {
           layer.innerHTML = "";
         }
       }, 350);
-    }, 3200);
+    }, flash.action ? 7000 : 3200);
   }
 }
 
@@ -335,20 +330,103 @@ function syncScanner() {
   }, 2600);
 }
 
+// ---------------------------------------------------------------- sheets (in-app dialogs)
+
+function openSheet(next) {
+  sheet = next;
+  renderSheet();
+}
+
+function closeSheet() {
+  sheet = null;
+  renderSheet();
+}
+
+function renderSheet() {
+  const layer = document.getElementById("sheet-layer");
+  if (sheet === shownSheet && layer.childElementCount === (sheet ? 2 : 0)) return;
+  const opening = !shownSheet && sheet;
+  shownSheet = sheet;
+  if (!sheet) {
+    layer.innerHTML = "";
+    return;
+  }
+  const body = sheet.kind === "report" ? renderReportSheet() : sheet.kind === "lossy" ? renderLossySheet() : renderRestoreSheet();
+  layer.innerHTML = `<div class="sheet-backdrop" data-action="close-sheet"></div>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">${body}</div>`;
+  if (opening) layer.querySelector(".sheet input, .sheet button")?.focus({ preventScroll: true });
+}
+
+function renderReportSheet() {
+  const stay = findStay(sheet.stayId);
+  const fresh = stay.export && stay.export.fp === currentFp(stay);
+  const fileNote = sheet.method === "file" && !fresh ? `<p class="sheet-warn">${t(stay.export ? "sheet.staleFile" : "sheet.noFile")}
+      <button class="chip" data-action="export">${ICON.download}${t("report.download")}</button></p>` : "";
+  return `<h2 id="sheet-title">${t("sheet.title.report")}</h2>
+    <fieldset class="choice"><legend>${t("sheet.how")}</legend>
+      ${["file", "form"].map((m) => `<label class="radio"><input type="radio" name="method" value="${m}" data-sheet-field="method" ${sheet.method === m ? "checked" : ""}>${t(m === "file" ? "sheet.viaFile" : "sheet.viaForm")}</label>`).join("")}
+    </fieldset>
+    ${fileNote}
+    <label class="check"><input type="checkbox" data-sheet-field="checked" ${sheet.checked ? "checked" : ""}>${t("sheet.check", { n: stay.guests.length })}</label>
+    <label>${t("sheet.ref")}<input data-sheet-field="ref" value="${esc(sheet.ref)}" autocomplete="off"></label>
+    <div class="sheet-actions">
+      <button data-action="close-sheet">${t("sheet.cancel")}</button>
+      <button class="primary" data-action="confirm-report" ${sheet.checked ? "" : "disabled"}>${ICON.check}${t("sheet.confirm")}</button>
+    </div>`;
+}
+
+function renderLossySheet() {
+  return `<h2 id="sheet-title">${t("sheet.title.lossy")}</h2>
+    <p>${esc(t("sheet.lossyText", { chars: sheet.chars.join(" ") }))}</p>
+    <div class="sheet-actions">
+      <button data-action="lossy-anyway">${t("sheet.lossyAnyway")}</button>
+      <button class="primary" data-action="close-sheet">${t("sheet.lossyFix")}</button>
+    </div>`;
+}
+
+function renderRestoreSheet() {
+  const s = sheet.result.summary;
+  return `<h2 id="sheet-title">${t("sheet.title.restore")}</h2>
+    ${s.createdAt ? `<p class="muted">${t("restore.created", { date: esc(niceDateTime(s.createdAt)) })}</p>` : ""}
+    <p><b>${t("restore.summary", { a: s.apartments, s: s.stays, g: s.guests })}</b></p>
+    ${s.orphans ? `<p class="sheet-warn">${t("restore.orphans", { n: s.orphans })}</p>` : ""}
+    <p class="muted">${t("restore.warning")}</p>
+    <div class="sheet-actions">
+      <button data-action="close-sheet">${t("sheet.cancel")}</button>
+      <button class="primary" data-action="restore-confirm">${t("restore.confirm")}</button>
+    </div>`;
+}
+
 // ---------------------------------------------------------------- views
+
+function backupDue() {
+  const s = state.settings;
+  if (!state.stays.some((st) => st.guests.length)) return false;
+  if (s.backupSnoozeUntil && Date.now() < Date.parse(s.backupSnoozeUntil)) return false;
+  if (!s.lastBackupAt) return true;
+  return Date.now() - Date.parse(s.lastBackupAt) > 14 * DAY || (s.changesSinceBackup || 0) >= 5;
+}
+
+function backupLine() {
+  const at = state.settings.lastBackupAt;
+  return at ? t("backup.last", { date: esc(niceDateTime(at)) }) : t("backup.lastNever");
+}
 
 function renderStays() {
   const needsProperty = !state.properties.length;
   const needsKey = !state.settings.apiKey;
   const stays = [...state.stays].sort((a, b) => (a.arrival || "9").localeCompare(b.arrival || "9"));
-  const open = stays.filter((s) => !s.submittedAt);
-  const done = stays.filter((s) => s.submittedAt).reverse();
+  const open = stays.filter(isOpen);
+  const done = stays.filter((s) => !isOpen(s)).reverse();
 
   const card = (s) => {
-    const st = stayStatus(s);
+    const stage = stageOf(s);
+    const dl = deadlineInfo(s);
     const p = findProperty(s.propertyId);
-    return `<button class="stay-card s-${st.cls}" data-action="open-stay" data-id="${s.id}">
-      <span class="stay-top"><span class="stay-place">${esc(p?.label || p?.name || t("stay.noProperty"))}</span><span class="pill ${st.cls}">${esc(st.text)}</span></span>
+    const bar = stage === "reported" ? "ok" : dl?.cls === "bad" ? "bad" : STAGE_CLASS[stage];
+    return `<button class="stay-card s-${bar}" data-action="open-stay" data-id="${s.id}">
+      <span class="stay-top"><span class="stay-place">${esc(p?.label || p?.name || t("stay.noProperty"))}</span>
+        <span class="pills"><span class="pill ${STAGE_CLASS[stage]}">${t("stage." + stage)}</span>${dl ? `<span class="pill ${dl.cls}">${esc(dl.text)}</span>` : ""}</span></span>
       <span class="stay-dates">${niceDate(s.arrival)} <span class="arrow">→</span> ${niceDate(s.departure)}${s.label ? ` · <span class="muted">${esc(s.label)}</span>` : ""}</span>
       <span class="stay-bottom"><span class="avatars">${s.guests.slice(0, 5).map(avatar).join("")}</span>
         <span class="muted small">${t("hero.guests", { n: s.guests.length })}</span><span class="chev">›</span></span>
@@ -367,18 +445,27 @@ function renderStays() {
         </section>`
       : "";
 
+  const reminder = backupDue()
+    ? `<section class="card reminder"><h2>${ICON.shield}${t("backup.reminderTitle")}</h2>
+        <p class="muted">${state.settings.lastBackupAt ? backupLine() + " " : ""}${t("backup.never")}</p>
+        <div class="row-buttons"><button class="primary" data-action="backup">${t("backup.now")}</button><button data-action="backup-later">${t("backup.later")}</button></div>
+      </section>`
+    : "";
+
   const empty = !stays.length
     ? `<div class="empty"><div class="empty-art">${skylineSvg(3)}</div><h3>${t("list.emptyTitle")}</h3><p class="muted">${t("list.emptyText")}</p>
         <button class="primary" data-action="new-stay">${ICON.plus}${t("nav.newStay")}</button></div>`
     : "";
 
+  const exportable = open.filter((s) => ["ready", "changed"].includes(stageOf(s)) && !stayIssues(s, findProperty(s.propertyId), today()).length);
   return `
     ${onboarding}
+    ${reminder}
     ${empty}
     ${stays.length ? `<h2 class="section-title">${t("list.toReport")} ${open.length ? `<span class="count">${open.length}</span>` : ""}</h2>` : ""}
     ${stays.length && !open.length ? `<p class="all-done">${t("list.allDone")}</p>` : ""}
     <div class="stack">${open.map(card).join("")}</div>
-    ${open.filter((s) => !checkStay(s).length).length > 1 ? `<button class="wide" data-action="export-all">${ICON.download}${t("list.exportAll")}</button>` : ""}
+    ${exportable.length > 1 ? `<button class="wide" data-action="export-all">${ICON.download}${t("list.exportAll")}</button>` : ""}
     ${done.length ? `<details class="history"><summary>${t("list.reported", { n: done.length })}</summary><div class="stack">${done.map(card).join("")}</div></details>` : ""}`;
 }
 
@@ -434,16 +521,7 @@ function renderStay(stay) {
 
     <section class="card">
       <h2><span class="num">3</span>${t("report.title")}</h2>
-      <div data-status="report">${renderReportStatus(stay)}</div>
-      <div class="rsteps">
-        <div class="rstep"><span class="rnum">1</span><div>
-          <button class="primary" data-action="export" ${checkStay(stay).length ? "disabled" : ""}>${ICON.download}${t("report.download")}</button>
-          ${stay.exportedAt ? `<div class="muted small">${t("report.downloaded", { date: esc(new Date(stay.exportedAt).toLocaleString(locale())) })}</div>` : ""}
-        </div></div>
-        <div class="rstep"><span class="rnum">2</span><div>${t("report.upload", { url: UBYPORT_URL })}</div></div>
-        <div class="rstep"><span class="rnum">3</span><div>${t("report.receipt")}
-          <button class="${stay.submittedAt ? "" : "success"}" data-action="toggle-submitted">${stay.submittedAt ? "↺ " + t("report.markUndone") : ICON.check + t("report.markDone")}</button></div></div>
-      </div>
+      <div data-status="report">${renderReport(stay)}</div>
       <details><summary>${t("report.manual")}</summary>${renderManualCopy(stay)}</details>
     </section>
     <button class="danger" data-action="delete-stay">${t("stay.delete")}</button>`;
@@ -465,32 +543,62 @@ function renderScanner() {
 }
 
 function renderDeadline(stay) {
-  const deadline = stay.arrival ? reportDeadline(stay.arrival) : null;
-  return deadline && !stay.submittedAt ? `<p class="deadline">⏰ ${t("stay.deadline", { date: niceDate(deadline) })}</p>` : "";
+  if (!stay.arrival || stageOf(stay) === "reported") return "";
+  return `<p class="deadline">⏰ ${t("stay.deadline", { date: niceDate(reportDeadline(stay.arrival)) })}</p>`;
 }
 
-function renderReportStatus(stay) {
-  const errors = checkStay(stay);
-  return errors.length
-    ? `<ul class="errors">${errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>`
+// Everything in the "Report to the police" card that depends on the current data.
+function renderReport(stay) {
+  const property = findProperty(stay.propertyId);
+  const stage = stageOf(stay);
+  const issues = stayIssues(stay, property, today());
+  const apartmentWarnings = propertyIssues(property).filter((i) => i.level === "warn");
+  const fresh = stay.export && stay.export.fp === currentFp(stay);
+  const banner =
+    stage === "changedAfterReport" ? `<p class="banner bad">${t("report.changedAfterReport")}</p>`
+    : stage === "changed" && stay.export ? `<p class="banner warn">${t("report.changedSinceExport")}</p>` : "";
+  const status = issues.length
+    ? `<p class="still">${t("report.stillNeeded")}</p><ul class="errors">${issues.map((i) => `<li>${esc(t("s." + i.code, i.params || {}))}</li>`).join("")}</ul>`
     : `<p class="all-good"><svg viewBox="0 0 24 24" class="draw-check"><circle cx="12" cy="12" r="10"/><path d="m7 12.5 3.3 3.3L17 9"/></svg>${t("report.allGood")}</p>`;
+  const apartment = apartmentWarnings.length
+    ? `<p class="still">${t("report.apartmentWarnings")}</p><ul class="warnings">${apartmentWarnings.map((i) => `<li>${esc(t("pw." + i.code))}</li>`).join("")}</ul>` : "";
+  const reported = stage === "reported" && stay.report
+    ? `<p class="all-good">${ICON.check}${t("report.reportedOn", { date: esc(niceDateTime(stay.report.at)), method: t(stay.report.method === "form" ? "report.methodForm" : "report.methodFile") })}${stay.report.ref ? ` · ${esc(stay.report.ref)}` : ""}</p>
+       <button data-action="reopen">↺ ${t("report.reopen")}</button>`
+    : `<button class="success" data-action="open-report-sheet" ${issues.length ? "disabled" : ""}>${ICON.check}${t("report.confirm")}</button>`;
+  return `${banner}${status}${apartment}
+    <div class="rsteps">
+      <div class="rstep"><span class="rnum">1</span><div>
+        <button class="primary" data-action="export" ${issues.length ? "disabled" : ""}>${ICON.download}${t(stay.export && !fresh ? "report.downloadAgain" : "report.download")}</button>
+        ${stay.export ? `<div class="muted small">${t("report.downloaded", { date: esc(niceDateTime(stay.export.at)) })}</div>` : ""}
+      </div></div>
+      <div class="rstep"><span class="rnum">2</span><div>${t("report.upload", { url: UBYPORT_URL })}</div></div>
+      <div class="rstep"><span class="rnum">3</span><div>${stage === "reported" ? "" : t("report.receipt")} ${reported}</div></div>
+    </div>`;
 }
 
 function renderGuestTitle(g, i) {
-  const badge = g.mrz
-    ? g.mrz.valid
-      ? `<span class="pill ok verified" title="${esc(t("guest.verifiedTitle"))}">${ICON.check}${t("guest.verified")}</span>`
-      : `<span class="pill bad">⚠ ${t("guest.mrzFailed")}</span>`
-    : `<span class="pill muted">${t("guest.notVerified")}</span>`;
+  const mrz = mrzState(g);
+  const mrzBadge =
+    mrz.state === "ok" ? `<span class="pill ok verified" title="${esc(t("guest.verifiedTitle"))}">${ICON.check}${t("guest.mrzOk")}</span>`
+    : mrz.state === "failed" ? `<span class="pill bad">⚠ ${t("guest.mrzFailed")}</span>`
+    : mrz.state === "edited" ? `<span class="pill warn">⚠ ${t("guest.mrzEdited")}</span>` : "";
   return `${avatar(g)}<span class="guest-name"><strong>${esc(guestName(g))}</strong>
-    <span class="muted small">${g.nationality ? `${flag(g.nationality)} ${esc(countryName(g.nationality))}` : `#${i + 1}`}</span></span>${badge}`;
+    <span class="muted small">${g.nationality ? `${flag(g.nationality)} ${esc(countryName(g.nationality))}` : `#${i + 1}`}</span></span><span class="pills">${mrzBadge}</span>`;
 }
 
 function renderGuestStatus(stay, g) {
-  const { errors, warnings } = checkGuest(g, stay);
+  const issues = guestIssues(g, stay, today());
+  const errors = issues.filter((i) => i.level === "error");
+  const warnings = issues.filter((i) => i.level === "warn");
+  const review = isReviewed(g)
+    ? `<p class="reviewed">${ICON.check}${t("guest.reviewed")}</p>`
+    : `<div class="review"><button class="success" data-action="review-guest" data-guest="${g.id}" ${errors.length ? "disabled" : ""}>${ICON.check}${t("guest.review")}</button>
+        <span class="muted small">${t("guest.reviewHint")}</span></div>`;
   return (
-    (errors.length ? `<ul class="errors">${errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : "") +
-    (warnings.length ? `<ul class="warnings">${warnings.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : "")
+    (errors.length ? `<ul class="errors">${errors.map((i) => `<li>${issueText(i)}</li>`).join("")}</ul>` : "") +
+    (warnings.length ? `<ul class="warnings">${warnings.map((i) => `<li>${issueText(i)}</li>`).join("")}</ul>` : "") +
+    review
   );
 }
 
@@ -504,11 +612,11 @@ function nationalityOptions(selected) {
 }
 
 function renderGuest(stay, g, i) {
-  const { errors } = checkGuest(g, stay);
+  const hasErrors = guestIssues(g, stay, today()).some((x) => x.level === "error");
   const f = (field, label, attrs = "") =>
     `<label>${label}<input data-guest="${g.id}" data-field="${field}" value="${esc(g[field])}" ${attrs}></label>`;
   return `
-  <div class="guest ${errors.length ? "has-errors" : ""} ${freshGuests.has(g.id) ? "pop-in" : ""}" style="--i:${i}" data-guest-card="${g.id}">
+  <div class="guest ${hasErrors ? "has-errors" : ""} ${freshGuests.has(g.id) ? "pop-in" : ""}" style="--i:${i}" data-guest-card="${g.id}">
     <div class="guest-head" data-status="guest-title">${renderGuestTitle(g, i)}</div>
     <div class="two">
       ${f("surname", t("f.surname"), 'autocapitalize="words"')}
@@ -604,17 +712,19 @@ function renderSettings() {
     <section class="card">
       <h2>💾 ${t("set.backup")}</h2>
       <p class="muted small">${t("set.backupHint")}</p>
+      <p class="backup-status"><b>${backupLine()}</b><br><span class="muted small">${t(storageMode === "persisted" ? "backup.storagePersisted" : "backup.storageBestEffort")}</span></p>
       <div class="row-buttons">
-        <button data-action="backup">${ICON.download}${t("set.download")}</button>
+        <button class="primary" data-action="backup">${ICON.shield}${t("backup.now")}</button>
         <label class="button-like">${t("set.restore")}<input type="file" accept="application/json,.json" data-action="restore" hidden></label>
       </div>
     </section>`;
 }
 
 function renderPropertySummary(p) {
-  return `<strong>${esc(p.label || p.name || t("set.newApartment"))}</strong> ${
-    p.idub ? `<span class="muted small">IDUB ${esc(p.idub)}</span>` : `<span class="pill bad">${t("set.idubMissing")}</span>`
-  }`;
+  const issues = propertyIssues(p);
+  const pill = issues.some((i) => i.level === "error") ? `<span class="pill bad">${t("set.idubMissing")}</span>`
+    : issues.length ? `<span class="pill warn">${t("set.checkDetails")}</span>` : "";
+  return `<strong>${esc(p.label || p.name || t("set.newApartment"))}</strong> ${p.idub ? `<span class="muted small">IDUB ${esc(p.idub)}</span>` : ""} ${pill}`;
 }
 
 function renderProperty(p) {
@@ -648,51 +758,79 @@ function renderHelp() {
 
 // Updates validation messages in place, leaving the inputs alone, so focus and
 // the field the user is about to tap survive every keystroke.
+// Replaces markup only when it changed, so a button about to be tapped isn't swapped out.
+function setHtml(el, html) {
+  if (el && el.innerHTML !== html) el.innerHTML = html;
+}
+
 function refreshStatus() {
   const stay = view.name === "stay" ? findStay(view.id) : null;
   if (stay) {
-    const set = (sel, html) => document.querySelectorAll(sel).forEach((el) => (el.innerHTML = html));
-    set('[data-status="report"]', renderReportStatus(stay));
+    const set = (sel, html) => document.querySelectorAll(sel).forEach((el) => setHtml(el, html));
+    set('[data-status="report"]', renderReport(stay));
     set('[data-status="deadline"]', renderDeadline(stay));
     set('[data-status="stepper"]', renderStepper(stay));
-    document.getElementById("hero-text").innerHTML = renderHeroText();
-    const exportBtn = document.querySelector('[data-action="export"]');
-    if (exportBtn) exportBtn.disabled = checkStay(stay).length > 0;
+    setHtml(document.getElementById("hero-text"), renderHeroText());
     stay.guests.forEach((g, i) => {
       const card = document.querySelector(`[data-guest-card="${g.id}"]`);
       if (!card) return;
-      card.classList.toggle("has-errors", checkGuest(g, stay).errors.length > 0);
-      card.querySelector('[data-status="guest-title"]').innerHTML = renderGuestTitle(g, i);
-      card.querySelector('[data-status="guest"]').innerHTML = renderGuestStatus(stay, g);
+      card.classList.toggle("has-errors", guestIssues(g, stay, today()).some((x) => x.level === "error"));
+      setHtml(card.querySelector('[data-status="guest-title"]'), renderGuestTitle(g, i));
+      setHtml(card.querySelector('[data-status="guest"]'), renderGuestStatus(stay, g));
     });
   }
   document.querySelectorAll('[data-status="property"]').forEach((el) => {
     const p = findProperty(el.dataset.id);
-    if (p) el.innerHTML = renderPropertySummary(p);
+    if (p) setHtml(el, renderPropertySummary(p));
   });
 }
 
 // ---------------------------------------------------------------- actions
 
-function exportFiles(stays) {
+function exportFiles(stays, { force = false } = {}) {
+  const chars = [...new Set(stays.flatMap((s) => stayLossy(s, findProperty(s.propertyId))))];
+  if (chars.length && !force) return openSheet({ kind: "lossy", stayIds: stays.map((s) => s.id), chars });
   const byProperty = new Map();
   for (const stay of stays) {
     if (!byProperty.has(stay.propertyId)) byProperty.set(stay.propertyId, []);
     byProperty.get(stay.propertyId).push(stay);
   }
   const now = new Date();
-  const lossy = new Set();
   for (const [propertyId, group] of byProperty) {
     const property = findProperty(propertyId);
     const entries = group.flatMap((stay) => stay.guests.map((guest) => ({ stay, guest })));
-    const { bytes, lossy: l } = encodeCp1250(buildUnl(property, entries, now));
-    l.forEach((c) => lossy.add(c));
-    download(unlFileName(property, now), bytes, "text/plain;charset=windows-1250");
-    group.forEach((s) => (s.exportedAt = now.toISOString()));
+    download(unlFileName(property, now), encodeCp1250(buildUnl(property, entries, now)).bytes, "text/plain;charset=windows-1250");
+    for (const s of group) s.export = { at: now.toISOString(), fp: stayFingerprint(s, property), method: "file", ref: "" };
   }
-  save();
-  if (lossy.size) showFlash("error", t("toast.lossy", { chars: [...lossy].join(" ") }));
-  else showFlash("ok", t("toast.downloaded", { n: byProperty.size }));
+  noteChange();
+  saveNow();
+  // Downloading from inside the confirmation dialog refreshes its "file is out of date" note.
+  if (sheet?.kind === "report") shownSheet = null;
+  else sheet = null;
+  showFlash("ok", t("toast.downloaded", { n: byProperty.size }));
+}
+
+async function backupNow() {
+  const payload = JSON.stringify(backupPayload(state), null, 2);
+  const name = `ubyport-helper-backup-${today()}.json`;
+  const file = new File([payload], name, { type: "application/json" });
+  try {
+    if (navigator.canShare?.({ files: [file] })) await navigator.share({ files: [file], title: name });
+    else download(name, payload, "application/json");
+  } catch (e) {
+    if (e?.name === "AbortError") return;
+    download(name, payload, "application/json");
+  }
+  Object.assign(state.settings, { lastBackupAt: new Date().toISOString(), changesSinceBackup: 0, backupSnoozeUntil: null });
+  saveNow();
+  showFlash("ok", t("backup.done"));
+}
+
+function replaceState(next) {
+  state = next;
+  saveNow();
+  applyTheme(state.settings.theme);
+  changeLanguage(state.settings.lang || getLang());
 }
 
 async function addPhotos(stay, files) {
@@ -708,7 +846,8 @@ async function addPhotos(stay, files) {
       freshGuests.add(guest.id);
       stay.guests.push(guest);
     }
-    save();
+    noteChange();
+    saveNow();
     busy = null;
     const parts = [guests.length ? t("toast.found", { n: guests.length }) : t("toast.foundNone")];
     if (unusable.length) parts.push(t("toast.skipped", { list: unusable.join("; ") }));
@@ -727,6 +866,7 @@ function changeLanguage(code) {
   mountShell();
   lastViewKey = null;
   shownFlash = undefined;
+  shownSheet = undefined;
   render();
 }
 
@@ -744,8 +884,17 @@ document.addEventListener("click", (e) => {
     case "dismiss-flash":
       flash = null;
       break;
+    case "toast-action": {
+      const run = flash?.action?.run;
+      flash = null;
+      run?.();
+      break;
+    }
+    case "close-sheet":
+      closeSheet();
+      return;
     case "new-stay": {
-      const s = { id: uid(), propertyId: state.properties.length === 1 ? state.properties[0].id : "", arrival: today(), departure: "", label: "", guests: [], createdAt: new Date().toISOString() };
+      const s = { id: uid(), propertyId: state.properties.length === 1 ? state.properties[0].id : "", arrival: today(), departure: "", label: "", guests: [], createdAt: new Date().toISOString(), export: null, report: null };
       state.stays.push(s);
       save();
       view = { name: "stay", id: s.id };
@@ -759,13 +908,22 @@ document.addEventListener("click", (e) => {
       const g = emptyGuest();
       freshGuests.add(g.id);
       stay.guests.push(g);
+      noteChange();
       save();
       break;
+    }
+    case "review-guest": {
+      const g = stay.guests.find((x) => x.id === el.dataset.guest);
+      if (g && !guestIssues(g, stay, today()).some((i) => i.level === "error")) g.reviewedFp = guestFingerprint(g);
+      save();
+      refreshStatus();
+      return;
     }
     case "remove-guest": {
       const g = stay.guests.find((x) => x.id === el.dataset.guest);
       if (!confirm(t("confirm.removeGuest", { name: guestName(g) }))) return;
       stay.guests = stay.guests.filter((x) => x.id !== g.id);
+      noteChange();
       save();
       break;
     }
@@ -776,24 +934,43 @@ document.addEventListener("click", (e) => {
       save();
       break;
     }
-    case "export":
-      if (!checkStay(stay).length) exportFiles([stay]);
+    case "export": {
+      const target = stay || findStay(sheet?.stayId);
+      if (target && !stayIssues(target, findProperty(target.propertyId), today()).length) exportFiles([target]);
       return;
+    }
     case "export-all":
-      exportFiles(state.stays.filter((s) => !s.submittedAt && !checkStay(s).length));
+      exportFiles(state.stays.filter((s) => ["ready", "changed"].includes(stageOf(s)) && !stayIssues(s, findProperty(s.propertyId), today()).length));
       return;
-    case "toggle-submitted":
-      stay.submittedAt = stay.submittedAt ? null : new Date().toISOString();
-      save();
-      if (stay.submittedAt) {
-        view = { name: "stays" };
-        flash = { kind: "ok", text: t("toast.reported") };
-        confetti();
-      }
+    case "lossy-anyway": {
+      const stays = sheet.stayIds.map(findStay).filter(Boolean);
+      sheet = null;
+      exportFiles(stays, { force: true });
+      return;
+    }
+    case "open-report-sheet":
+      openSheet({ kind: "report", stayId: stay.id, method: "file", checked: false, ref: "" });
+      return;
+    case "confirm-report": {
+      const target = findStay(sheet.stayId);
+      if (!sheet.checked || !target) return;
+      target.report = { at: new Date().toISOString(), fp: currentFp(target), method: sheet.method, ref: sheet.ref.trim() };
+      noteChange();
+      saveNow();
+      sheet = null;
+      view = { name: "stays" };
+      flash = { kind: "ok", text: t("toast.reported") };
+      confetti();
+      break;
+    }
+    case "reopen":
+      stay.report = null;
+      saveNow();
       break;
     case "delete-stay":
       if (!confirm(t("confirm.deleteStay"))) return;
       state.stays = state.stays.filter((s) => s.id !== stay.id);
+      noteChange();
       save();
       view = { name: "stays" };
       break;
@@ -805,12 +982,14 @@ document.addEventListener("click", (e) => {
       return;
     case "add-property":
       state.properties.push(emptyProperty());
+      noteChange();
       save();
       break;
     case "remove-property": {
       const used = state.stays.some((s) => s.propertyId === el.dataset.id);
       if (!confirm(t(used ? "confirm.removeUsedApartment" : "confirm.removeApartment"))) return;
       state.properties = state.properties.filter((p) => p.id !== el.dataset.id);
+      noteChange();
       save();
       break;
     }
@@ -835,8 +1014,30 @@ document.addEventListener("click", (e) => {
       return;
     }
     case "backup":
-      download(`ubyport-helper-backup-${today()}.json`, JSON.stringify({ ...state, settings: { ...state.settings, apiKey: "" } }, null, 2), "application/json");
+      backupNow();
       return;
+    case "backup-later":
+      state.settings.backupSnoozeUntil = new Date(Date.now() + 3 * DAY).toISOString();
+      save();
+      break;
+    case "restore-confirm": {
+      const previous = JSON.stringify(state);
+      try {
+        localStorage.setItem(BEFORE_RESTORE_KEY, previous);
+      } catch {}
+      const data = sheet.result.data;
+      sheet = null;
+      replaceState({ ...data, settings: { ...data.settings, apiKey: state.settings.apiKey } });
+      view = { name: "stays" };
+      showFlash("ok", t("toast.restored"), {
+        label: t("toast.undo"),
+        run: () => {
+          replaceState(JSON.parse(previous));
+          showFlash("ok", t("toast.restoreUndone"));
+        },
+      });
+      return;
+    }
     default:
       return;
   }
@@ -846,6 +1047,14 @@ document.addEventListener("click", (e) => {
 // Typing updates state and the status messages, never the inputs themselves.
 document.addEventListener("input", (e) => {
   const el = e.target;
+  if (el.dataset.sheetField && sheet) {
+    sheet[el.dataset.sheetField] = el.type === "checkbox" ? el.checked : el.value;
+    if (el.dataset.sheetField === "method") {
+      shownSheet = null;
+      renderSheet();
+    } else document.querySelector('[data-action="confirm-report"]')?.toggleAttribute("disabled", !sheet.checked);
+    return;
+  }
   if (el.dataset.guest && el.dataset.field) {
     const g = findStay(view.id)?.guests.find((x) => x.id === el.dataset.guest);
     if (g) g[el.dataset.field] = el.value;
@@ -872,26 +1081,33 @@ document.addEventListener("change", async (e) => {
   }
   if (el.dataset.action === "restore") {
     const file = el.files[0];
+    el.value = "";
     if (!file) return;
+    let raw;
     try {
-      const data = JSON.parse(await file.text());
-      if (!Array.isArray(data.stays) || !Array.isArray(data.properties)) throw new Error(t("toast.notBackup"));
-      if (!confirm(t("confirm.restore", { n: data.stays.length }))) return;
-      state = { ...data, settings: { ...defaultSettings(), ...data.settings, apiKey: state.settings.apiKey } };
-      save();
-      applyTheme(state.settings.theme);
-      changeLanguage(state.settings.lang || getLang());
-      showFlash("ok", t("toast.restored"));
-    } catch (err) {
-      showFlash("error", t("toast.restoreFailed", { msg: err.message }));
+      raw = JSON.parse(await file.text());
+    } catch {
+      return showFlash("error", t("toast.notBackup"));
     }
+    const result = validateBackup(raw);
+    if (!result.ok) return showFlash("error", t(result.error === "notBackup" ? "toast.notBackup" : `restore.${result.error}`));
+    openSheet({ kind: "restore", result });
     return;
   }
-  // Selects and some date pickers only fire "change"; record the value here too.
-  el.dispatchEvent(new Event("input", { bubbles: true }));
+  if (el.dataset.sheetField) return;
+  // Selects and some date pickers only fire "change"; text fields were already recorded while typing.
+  if (el.tagName === "SELECT" || el.type === "date") el.dispatchEvent(new Event("input", { bubbles: true }));
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && sheet) closeSheet();
 });
 
 setLang(state.settings.lang || DEFAULT_LANG);
 applyTheme(state.settings.theme);
 mountShell();
 render();
+requestPersistence().then((mode) => {
+  storageMode = mode;
+  if (view.name === "settings") render();
+});
