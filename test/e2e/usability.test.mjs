@@ -217,7 +217,6 @@ test("API errors are explained in plain words and can be closed", () =>
 
 test("the web-form copy list stays open while copying, and Help shows how to add the app to the Home Screen", () =>
   withApp({}, async ({ page }) => {
-    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
     await addApartment(page);
     await page.click('.tab[data-view="stays"]');
     await page.click(".fab-wrap");
@@ -227,9 +226,14 @@ test("the web-form copy list stays open while copying, and Help shows how to add
     const row = page.locator(".copy-row", { hasText: "Příjmení" });
     const box = await row.boundingBox();
     assert.ok(box.height < 80, `a copy row is ${box.height}px tall`);
+    // Headless browsers differ in clipboard support, so record what the app copies.
+    await page.evaluate(() => {
+      window.copied = [];
+      navigator.clipboard.writeText = async (text) => void window.copied.push(text);
+    });
     await row.click();
     await page.locator(".toast", { hasText: "Copied" }).waitFor();
-    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "Smith");
+    assert.deepEqual(await page.evaluate(() => window.copied), ["Smith"]);
     assert.equal(await page.locator("#sec-report details[open]").count(), 1, "copying doesn't close the list");
     assert.match(await page.locator(".copy-row.copied").innerText(), /Smith/);
 

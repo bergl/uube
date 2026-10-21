@@ -28,7 +28,15 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm test
       - run: npm run build
-      - run: npm run test:e2e
+      - name: Browser tests
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run test:e2e 2>&1 | tee e2e.log || {
+            # Failing tests also show up as annotations on the run.
+            echo "::error title=Browser tests failed::$(grep -A12 '^not ok' e2e.log | head -80 | sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g')"
+            exit 1
+          }
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
