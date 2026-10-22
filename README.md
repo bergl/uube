@@ -25,6 +25,7 @@ Passport photo from WhatsApp → Claude reads the document → you check the det
 - Five themes: Praha (golden hour), Prague by night, Vltava, Petřín in spring, and Classic, which follows the phone's dark mode.
 - English, Czech and Russian. Russian is the default; switch with the globe button or in Settings.
 - The Back button works, Undo replaces confirmation dialogs, and every theme passes an automated accessibility scan.
+- **Send feedback** (in Settings and Help) opens the phone's email app with a message to the developer. Technical details such as app version, browser and screen size are added only if she leaves the box ticked, and never include guest data.
 
 ## Using it
 

@@ -175,7 +175,7 @@
     background: var(--accent-soft); color: var(--accent-strong); flex-shrink: 0;
   }
   label, .label { display: block; font-size: .82rem; font-weight: 650; color: var(--muted); margin: 12px 0 0; }
-  input, select {
+  input, select, textarea {
     display: block; width: 100%; margin-top: 5px; padding: 11px 13px; font: inherit; font-size: 16px; color: var(--text);
     background: var(--input); border: 1.5px solid var(--line-strong); border-radius: 13px; min-width: 0;
     transition: border-color .2s, box-shadow .2s, background-color .4s;
@@ -183,7 +183,7 @@
   /* iOS Safari sizes native date inputs to their content and centers the value; make them behave like text fields. */
   input[type="date"] { -webkit-appearance: none; appearance: none; min-height: 47px; max-width: 100%; text-align: left; }
   input[type="date"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
-  input:focus, select:focus, .select-btn:focus-visible { outline: none; border-color: var(--accent-strong); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
+  input:focus, select:focus, textarea:focus, .select-btn:focus-visible { outline: none; border-color: var(--accent-strong); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
   [aria-invalid="true"] { border-color: var(--bad) !important; }
   .select-btn { display: block; width: 100%; margin: 5px 0 0; min-height: 47px; padding: 11px 13px; text-align: left; font-weight: 500;
     background: var(--input); border: 1.5px solid var(--line-strong); border-radius: 13px; color: var(--text); }
@@ -191,7 +191,7 @@
   .three { grid-template-columns: 1fr 1fr 1fr; }
   @media (max-width: 480px) { .two { grid-template-columns: 1fr; } }
 
-  button {
+  button, a.button {
     display: inline-flex; align-items: center; justify-content: center; gap: 8px; font: inherit; font-weight: 650;
     padding: 11px 16px; border-radius: 14px; border: 1.5px solid var(--line); background: var(--card); color: var(--text);
     cursor: pointer; margin: 10px 0 0; transition: transform .12s, box-shadow .2s, background-color .2s, opacity .2s;
@@ -514,13 +514,24 @@
     font: 500 .78rem/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; overflow: auto; tab-size: 2;
   }
   .unl-raw .sep { color: var(--accent-strong); font-weight: 800; }
+  a.button { text-decoration: none; }
+  a.button[aria-disabled="true"] { opacity: .45; cursor: not-allowed; box-shadow: none; }
+  textarea { min-height: 120px; resize: vertical; line-height: 1.45; }
+  .sheet-feedback .segmented { margin: 4px 0 8px; }
+  .sheet-feedback .segmented button { white-space: nowrap; gap: 5px; padding: 9px 4px; font-size: .92rem; }
+  @media (max-width: 400px) { .fb-emoji { display: none; } }
+  .fb-details { margin: 2px 0 0; font-size: .85rem; color: var(--muted); }
+  .fb-details summary { cursor: pointer; padding: 8px 0; min-height: 44px; display: flex; align-items: center; }
+  .fb-details pre { margin: 0; padding: 10px 12px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; font: 500 .75rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); }
+  .fb-fallback { margin: 14px 0 0; }
+  .fb-fallback .link { padding: 0; min-height: 0; display: inline; font-size: inherit; }
   .preview-actions { flex-wrap: nowrap; }
   .preview-actions .primary { flex: 1; min-width: 0; }
   .sheet p { margin: 8px 0; }
   .sheet-warn { padding: 10px 12px; border-radius: 12px; background: var(--warn-bg); color: var(--warn); font-size: .9rem; }
   .sheet-warn .chip { margin-top: 8px; }
   .sheet-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
-  .sheet-actions button { margin: 0; }
+  .sheet-actions button, .sheet-actions a.button { margin: 0; }
   fieldset.choice { border: 0; padding: 0; margin: 0; }
   fieldset.choice legend { font-size: .82rem; font-weight: 650; color: var(--muted); margin-bottom: 4px; }
   label.radio, label.check { display: flex; align-items: center; gap: 10px; min-height: 44px; margin: 4px 0; color: var(--text); font-size: 1rem; font-weight: 600; }

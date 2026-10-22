@@ -132,10 +132,13 @@ test("no serious accessibility problems in any theme", () =>
         s.settings.theme = th;
         localStorage.setItem("ubyport-helper-v1", JSON.stringify(s));
       }, theme);
-      for (const hash of ["#/", stayHash, "preview", "#/settings", "#/help"]) {
+      for (const hash of ["#/", stayHash, "preview", "#/settings", "feedback", "#/help"]) {
         if (hash === "preview") {
           await page.click('[data-action="preview-file"]');
           await page.locator(".preview-card").first().waitFor();
+        } else if (hash === "feedback") {
+          await page.click('[data-action="open-feedback"]');
+          await page.locator(".sheet-feedback textarea").waitFor();
         } else {
           await page.goto(new URL(hash, page.url()).href);
           await page.reload();
@@ -251,4 +254,36 @@ test("the web-form copy list stays open while copying, and Help shows how to add
     const guide = page.locator("#home-screen");
     assert.equal(await guide.locator(".a2hs-slide svg").count(), 4, "every step has a picture");
     assert.match(await guide.innerText(), /Share[\s\S]*More[\s\S]*Add to Home Screen[\s\S]*separate data/);
+  }));
+
+test("feedback opens the email app with the message and technical details, never guest data", () =>
+  withApp({}, async ({ page }) => {
+    await addApartment(page);
+    await page.click('.tab[data-view="settings"]');
+    await page.click('[data-action="open-feedback"]');
+    const sheet = page.locator(".sheet-feedback");
+    const send = sheet.locator("#fb-send");
+    assert.equal(await send.getAttribute("aria-disabled"), "true", "nothing to send yet");
+    await send.click({ force: true });
+    assert.equal(await sheet.count(), 1, "an empty message doesn't leave the sheet");
+    assert.ok(await sheet.locator("textarea").evaluate((el) => el === document.activeElement));
+
+    await sheet.locator('[data-action="feedback-topic"][data-topic="problem"]').click();
+    await sheet.locator("textarea").fill("The camera button does nothing & then?");
+    const href = await send.getAttribute("href");
+    assert.match(href, /^mailto:tomas\.bergl@gmail\.com\?subject=Ubyport%20Helper%3A%20Problem&body=/);
+    const body = decodeURIComponent(href.split("&body=")[1]);
+    assert.match(body, /^The camera button does nothing & then\?\n\n—\nApp: \S+ \d{4}-\d\d-\d\d\n/);
+    assert.match(body, /Saved: 1 apartments, 0 stays/);
+    assert.doesNotMatch(body, /123456789|Jana|Mánesova/, "no apartment or guest details");
+
+    await sheet.locator('[data-sheet-field="tech"]').uncheck();
+    assert.equal(decodeURIComponent((await send.getAttribute("href")).split("&body=")[1]), "The camera button does nothing & then?");
+
+    // The link itself opens the mail app; the test only checks the sheet closes afterwards.
+    await page.route("mailto:*", (route) => route.abort());
+    await send.evaluate((a) => a.addEventListener("click", (e) => e.preventDefault()));
+    await send.click();
+    await page.locator(".toast", { hasText: "Opening your email app" }).waitFor();
+    assert.equal(await page.locator(".sheet").count(), 0);
   }));

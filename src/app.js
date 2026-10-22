@@ -33,6 +33,7 @@ const ICON = {
   close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   chevron: '<svg viewBox="0 0 24 24"><path d="m9 5.5 6.5 6.5L9 18.5"/></svg>',
   copy: '<svg viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></svg>',
+  mail: '<svg viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4.5 7 7.5 6 7.5-6"/></svg>',
   eye: '<svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>',
   lock: '<svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>',
 };
@@ -70,6 +71,11 @@ let activeTab = null; // tab the highlight currently sits on
 const sectionOpen = new Map(); // "stayId:details" / "stayId:guests" → open?
 const openDetails = new Set(); // <details data-keep="…"> left open, kept across renders
 let copiedKey = null; // the copy row that shows a tick for a moment
+let lastErrorDetail = ""; // technical detail of the latest error, offered in feedback
+
+const FEEDBACK_EMAIL = "tomas.bergl@gmail.com";
+const FEEDBACK_TOPICS = { idea: "Idea", problem: "Problem", other: "Feedback" };
+const FEEDBACK_EMOJI = { idea: "💡", problem: "🐞", other: "💬" };
 const freshGuests = new Set();
 const photos = new Map(); // guest id → [{ url, rotation }], kept in memory only
 const expanded = new Set(); // guest ids open for editing
@@ -193,6 +199,7 @@ const aptDot = (p) => (p ? `<span class="apt-dot" style="--h:${propertyHue(p)}" 
 
 function showFlash(kind, text, action, detail) {
   flash = { kind, text, action, detail };
+  if (kind === "error" && detail) lastErrorDetail = detail;
   render();
 }
 
@@ -533,7 +540,7 @@ function renderSheet() {
     layer.innerHTML = "";
     return;
   }
-  const renderers = { preview: renderPreviewSheet, report: renderReportSheet, lossy: renderLossySheet, restore: renderRestoreSheet, lang: renderLangSheet, apikey: renderKeySheet, country: renderCountrySheet, photo: renderPhotoSheet };
+  const renderers = { preview: renderPreviewSheet, report: renderReportSheet, lossy: renderLossySheet, restore: renderRestoreSheet, lang: renderLangSheet, feedback: renderFeedbackSheet, apikey: renderKeySheet, country: renderCountrySheet, photo: renderPhotoSheet };
   layer.innerHTML = `<div class="sheet-backdrop" data-action="close-sheet"></div>
     <div class="sheet sheet-${sheet.kind}" role="dialog" aria-modal="true" aria-labelledby="sheet-title">${renderers[sheet.kind]()}</div>`;
   if (opening) layer.querySelector(".sheet input, .sheet button")?.focus({ preventScroll: true });
@@ -593,6 +600,51 @@ function renderPreviewSheet() {
       <button data-action="close-sheet">${t("photo.close")}</button>
       ${complete ? `<button class="primary" data-action="export">${ICON.download}${t("report.download")}</button>` : ""}
     </div>`;
+}
+
+// Technical details only: never guest or apartment data.
+function feedbackDetails() {
+  return [
+    `App: ${__BUILD__}`,
+    `Language: ${getLang()} · Theme: ${state.settings.theme} · Model: ${state.settings.model}`,
+    `Home Screen app: ${isHomeScreenApp() ? "yes" : "no"} · Screen: ${innerWidth}×${innerHeight} @${devicePixelRatio}x`,
+    `Saved: ${state.properties.length} apartments, ${state.stays.length} stays · API key: ${state.settings.apiKey ? "set" : "not set"}`,
+    ...(lastErrorDetail ? [`Last error: ${lastErrorDetail}`] : []),
+    `Browser: ${navigator.userAgent}`,
+  ];
+}
+
+function feedbackMail() {
+  const subject = `Ubyport Helper: ${FEEDBACK_TOPICS[sheet.topic]}`;
+  const body = [sheet.message.trim(), ...(sheet.tech ? ["", "—", ...feedbackDetails()] : [])].join("\n");
+  return { subject, body, href: `mailto:${FEEDBACK_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}` };
+}
+
+function updateFeedbackLink() {
+  const link = document.getElementById("fb-send");
+  if (!link) return;
+  link.href = feedbackMail().href;
+  link.setAttribute("aria-disabled", String(!sheet.message.trim()));
+}
+
+function renderFeedbackSheet() {
+  const mail = feedbackMail();
+  return `<h2 id="sheet-title">💬 ${t("fb.title")}</h2>
+    <p class="muted">${t("fb.text")}</p>
+    <div class="segmented" role="group" aria-label="${t("fb.topic")}">${Object.keys(FEEDBACK_TOPICS)
+      .map((k) => `<button class="${sheet.topic === k ? "on" : ""}" data-action="feedback-topic" data-topic="${k}" aria-pressed="${sheet.topic === k}"><span class="fb-emoji" aria-hidden="true">${FEEDBACK_EMOJI[k]}</span>${t(`fb.topic.${k}`)}</button>`)
+      .join("")}</div>
+    <label for="fb-message">${t("fb.message")}</label>
+    <textarea id="fb-message" data-sheet-field="message" rows="5" maxlength="1500" placeholder="${esc(t(`fb.placeholder.${sheet.topic}`))}">${esc(sheet.message)}</textarea>
+    <p class="muted small">${t("fb.privacy")}</p>
+    <label class="check"><input type="checkbox" data-sheet-field="tech" ${sheet.tech ? "checked" : ""}> <span>${t("fb.tech")}</span></label>
+    <details class="fb-details"><summary>${t("fb.showDetails")}</summary><pre>${esc(feedbackDetails().join("\n"))}</pre></details>
+    <div class="sheet-actions">
+      <button data-action="close-sheet">${t("photo.close")}</button>
+      <a class="button primary" id="fb-send" href="${esc(mail.href)}" data-action="feedback-send" aria-disabled="${!sheet.message.trim()}">${ICON.mail}${t("fb.send")}</a>
+    </div>
+    <p class="muted small fb-fallback">${t("fb.noMail", { email: `<b>${FEEDBACK_EMAIL}</b>` })}
+      <button class="link" data-action="feedback-copy">${t("fb.copy")}</button></p>`;
 }
 
 function renderLossySheet() {
@@ -1124,7 +1176,8 @@ function renderSettings() {
       <div class="segmented">${Object.keys(LANGS)
         .map((code) => `<button class="${getLang() === code ? "on" : ""}" data-action="set-lang" data-lang="${code}" aria-pressed="${getLang() === code}">${LANG_NAMES[code]}</button>`)
         .join("")}</div>
-    </section>`;
+    </section>
+    ${renderFeedbackCard()}`;
 }
 
 function renderPropertySummary(p) {
@@ -1219,7 +1272,16 @@ function renderHelp() {
     <h2>💡 ${t("help.rules")}</h2>
     <ul>${[1, 2, 3].map((i) => `<li>${t(`help.r${i}`)}</li>`).join("")}</ul>
   </section>
-  ${isHomeScreenApp() ? homeScreen : ""}`;
+  ${isHomeScreenApp() ? homeScreen : ""}
+  ${renderFeedbackCard()}`;
+}
+
+function renderFeedbackCard() {
+  return `<section class="card feedback-card">
+    <h2>💬 ${t("fb.title")}</h2>
+    <p class="muted">${t("fb.intro")}</p>
+    <button class="wide" data-action="open-feedback">${ICON.mail}${t("fb.button")}</button>
+  </section>`;
 }
 
 // Replaces markup only when it changed, so a button about to be tapped isn't swapped out.
@@ -1723,6 +1785,32 @@ document.addEventListener("click", (e) => {
         });
       });
       return;
+    case "open-feedback":
+      openSheet({ kind: "feedback", topic: "idea", message: "", tech: true });
+      setTimeout(() => document.getElementById("fb-message")?.focus({ preventScroll: true }), 50);
+      return;
+    case "feedback-topic":
+      sheet.topic = el.dataset.topic;
+      shownSheet = null;
+      renderSheet();
+      return;
+    case "feedback-send":
+      if (!sheet.message.trim()) {
+        e.preventDefault();
+        document.getElementById("fb-message")?.focus();
+        return;
+      }
+      // Let the link open the mail app before the sheet goes away.
+      setTimeout(() => {
+        sheet = null;
+        showFlash("ok", t("fb.opening"));
+      }, 300);
+      return;
+    case "feedback-copy": {
+      const mail = feedbackMail();
+      copy(`To: ${FEEDBACK_EMAIL}\nSubject: ${mail.subject}\n\n${mail.body}`);
+      return;
+    }
     case "open-lang":
       openSheet({ kind: "lang" });
       return;
@@ -1782,6 +1870,7 @@ document.addEventListener("input", (e) => {
   const el = e.target;
   if (el.dataset.sheetField && sheet) {
     sheet[el.dataset.sheetField] = el.type === "checkbox" ? el.checked : el.value;
+    if (sheet.kind === "feedback") return updateFeedbackLink();
     if (el.dataset.sheetField === "method") {
       shownSheet = null;
       renderSheet();
